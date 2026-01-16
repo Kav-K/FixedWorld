@@ -65,10 +65,11 @@ public class ChunkScanner implements Listener {
     // Key: "worldUUID:chunkKey"
     private final Set<String> chunksBeingVerified = ConcurrentHashMap.newKeySet();
 
-    // Scanning tasks
+    // Scanning tasks (all cancelled when absolute mode disabled)
     private BukkitRunnable signatureScanTask;
     private BukkitRunnable deepScanTask;
     private BukkitRunnable activityTask;
+    private BukkitRunnable statsTask;
 
     // Scanning state per world
     private final Map<UUID, Long> scanCursors = new ConcurrentHashMap<>();
@@ -116,44 +117,100 @@ public class ChunkScanner implements Listener {
         this.snapshotManager = snapshotManager;
     }
 
+    // How many chunks to capture per tick during initial baseline capture
+    private static final int BASELINE_CAPTURE_CHUNKS_PER_TICK = 50;
+    
+    // Track worlds currently being initialized (to prevent duplicate init)
+    private final Set<UUID> worldsBeingInitialized = ConcurrentHashMap.newKeySet();
+
     // ==================== FIXED WORLD LIFECYCLE ====================
 
     public void onFixedWorldEnabled(World world) {
         UUID worldId = world.getUID();
+        
+        // Prevent duplicate initialization
+        if (worldsBeingInitialized.contains(worldId)) {
+            plugin.getLogger().warning("[ChunkScanner] World '" + world.getName() + "' is already being initialized");
+            return;
+        }
+        
+        // Check if already initialized
+        if (chunkSignatures.containsKey(worldId)) {
+            plugin.getLogger().info("[ChunkScanner] World '" + world.getName() + "' already has baselines");
+            return;
+        }
+        
+        worldsBeingInitialized.add(worldId);
         
         Map<Long, ChunkSignature> worldSignatures = new ConcurrentHashMap<>();
         Map<Long, SoftReference<ChunkSnapshot>> worldCache = new ConcurrentHashMap<>();
         chunkSignatures.put(worldId, worldSignatures);
         snapshotCache.put(worldId, worldCache);
 
-        plugin.getLogger().info("[ChunkScanner] Capturing baselines for '" + world.getName() + "'...");
-        long startTime = System.currentTimeMillis();
+        // Get list of chunks to capture (snapshot of current loaded chunks)
+        Chunk[] loadedChunks = world.getLoadedChunks();
+        int totalChunks = loadedChunks.length;
         
-        int captured = 0;
-        for (Chunk chunk : world.getLoadedChunks()) {
-            long chunkKey = getChunkKey(chunk.getX(), chunk.getZ());
-            ChunkSnapshot snapshot = chunk.getChunkSnapshot();
-            
-            // Store signature (lightweight)
-            worldSignatures.put(chunkKey, new ChunkSignature(chunk.getX(), chunk.getZ(), snapshot));
-            
-            // Cache full snapshot (will be GC'd if memory tight)
-            worldCache.put(chunkKey, new SoftReference<>(snapshot));
-            
-            captured++;
-            
-            // Progress logging for large worlds
-            if (captured % 500 == 0) {
-                plugin.getLogger().info("[ChunkScanner] Progress: " + captured + " chunks captured...");
+        plugin.getLogger().info("[ChunkScanner] Starting async baseline capture for '" + world.getName() + 
+                               "' (" + totalChunks + " chunks, " + BASELINE_CAPTURE_CHUNKS_PER_TICK + "/tick)...");
+        
+        // Process chunks in batches across multiple ticks to avoid lag
+        final long startTime = System.currentTimeMillis();
+        final int[] capturedCount = {0};
+        final int[] currentIndex = {0};
+        
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                // Check if world was disabled during init
+                if (!chunkSignatures.containsKey(worldId)) {
+                    worldsBeingInitialized.remove(worldId);
+                    cancel();
+                    return;
+                }
+                
+                int processed = 0;
+                while (currentIndex[0] < loadedChunks.length && processed < BASELINE_CAPTURE_CHUNKS_PER_TICK) {
+                    Chunk chunk = loadedChunks[currentIndex[0]];
+                    currentIndex[0]++;
+                    
+                    // Skip if chunk was unloaded
+                    if (!chunk.isLoaded()) continue;
+                    
+                    long chunkKey = getChunkKey(chunk.getX(), chunk.getZ());
+                    
+                    // Skip if already captured (e.g., by onChunkLoad during init)
+                    if (worldSignatures.containsKey(chunkKey)) continue;
+                    
+                    ChunkSnapshot snapshot = chunk.getChunkSnapshot();
+                    worldSignatures.put(chunkKey, new ChunkSignature(chunk.getX(), chunk.getZ(), snapshot));
+                    worldCache.put(chunkKey, new SoftReference<>(snapshot));
+                    
+                    capturedCount[0]++;
+                    processed++;
+                }
+                
+                // Progress logging
+                if (capturedCount[0] % 500 == 0 && capturedCount[0] > 0) {
+                    int percent = (int) ((currentIndex[0] * 100.0) / totalChunks);
+                    plugin.getLogger().info("[ChunkScanner] Progress: " + capturedCount[0] + "/" + totalChunks + 
+                                          " chunks (" + percent + "%)");
+                }
+                
+                // Check if done
+                if (currentIndex[0] >= loadedChunks.length) {
+                    long elapsed = System.currentTimeMillis() - startTime;
+                    plugin.getLogger().info("[ChunkScanner] Captured " + capturedCount[0] + " chunk baselines in " + elapsed + "ms");
+                    plugin.getLogger().info("[ChunkScanner] Estimated memory: signatures=" + 
+                                           String.format("%.2f", getSignaturesMemoryMB()) + "MB, snapshots=" + 
+                                           String.format("%.2f", getSnapshotCacheMemoryMB()) + "MB");
+                    
+                    worldsBeingInitialized.remove(worldId);
+                    startScanning();
+                    cancel();
+                }
             }
-        }
-
-        long elapsed = System.currentTimeMillis() - startTime;
-        plugin.getLogger().info("[ChunkScanner] Captured " + captured + " chunk baselines in " + elapsed + "ms");
-        plugin.getLogger().info("[ChunkScanner] Estimated memory: signatures=" + 
-                               String.format("%.2f", getSignaturesMemoryMB()) + "MB, snapshots=" + 
-                               String.format("%.2f", getSnapshotCacheMemoryMB()) + "MB");
-        startScanning();
+        }.runTaskTimer(plugin, 1, 1);  // Run every tick
     }
 
     public void onFixedWorldDisabled(World world) {
@@ -191,8 +248,19 @@ public class ChunkScanner implements Listener {
 
     // ==================== CHUNK EVENTS ====================
 
+    /**
+     * Checks if scanner is active (absolute mode enabled and has tracked worlds).
+     * This is the first check in all event handlers to ensure zero overhead when disabled.
+     */
+    private boolean isActive() {
+        return !chunkSignatures.isEmpty();
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onChunkLoad(ChunkLoadEvent event) {
+        // Quick exit if scanner not active - zero overhead when absolute mode is off
+        if (!isActive()) return;
+        
         World world = event.getWorld();
         UUID worldId = world.getUID();
         
@@ -212,6 +280,9 @@ public class ChunkScanner implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onChunkUnload(ChunkUnloadEvent event) {
+        // Quick exit if scanner not active
+        if (!isActive()) return;
+        
         long chunkKey = getChunkKey(event.getChunk().getX(), event.getChunk().getZ());
         chunkActivityTimestamps.remove(chunkKey);
     }
@@ -255,21 +326,27 @@ public class ChunkScanner implements Listener {
         activityTask.runTaskTimer(plugin, 20, 20);
         
         // Periodic stats logging
-        new BukkitRunnable() {
+        statsTask = new BukkitRunnable() {
             @Override
             public void run() {
                 logPeriodicStats();
             }
-        }.runTaskTimer(plugin, 600, 600);  // Every 30 seconds
+        };
+        statsTask.runTaskTimer(plugin, 600, 600);  // Every 30 seconds
     }
 
     private void stopScanning() {
         if (signatureScanTask != null) { signatureScanTask.cancel(); signatureScanTask = null; }
         if (deepScanTask != null) { deepScanTask.cancel(); deepScanTask = null; }
         if (activityTask != null) { activityTask.cancel(); activityTask = null; }
+        if (statsTask != null) { statsTask.cancel(); statsTask = null; }
+        plugin.getLogger().info("[ChunkScanner] All scanner tasks stopped");
     }
 
     private void updatePlayerActivity() {
+        // Quick exit if not active
+        if (!isActive()) return;
+        
         long now = System.currentTimeMillis();
         
         for (Player player : plugin.getServer().getOnlinePlayers()) {
@@ -290,6 +367,9 @@ public class ChunkScanner implements Listener {
     // ==================== SIGNATURE SCANNING ====================
 
     private void performSignatureScan() {
+        // Quick exit if not active
+        if (!isActive()) return;
+        
         int processed = 0;
         long now = System.currentTimeMillis();
 
@@ -527,6 +607,9 @@ public class ChunkScanner implements Listener {
     // ==================== DEEP SCANNING ====================
 
     private void performDeepScan() {
+        // Quick exit if not active
+        if (!isActive()) return;
+        
         int sectionsProcessed = 0;
         
         while (!pendingScanTasks.isEmpty() && sectionsProcessed < DEEP_SCAN_SECTIONS_PER_TICK) {
@@ -664,6 +747,7 @@ public class ChunkScanner implements Listener {
         pendingScanTasks.clear();
         chunkActivityTimestamps.clear();
         chunksBeingVerified.clear();
+        worldsBeingInitialized.clear();
         scanCursors.clear();
     }
 
@@ -793,7 +877,8 @@ public class ChunkScanner implements Listener {
      * Logs periodic statistics to console.
      */
     private void logPeriodicStats() {
-        if (chunkSignatures.isEmpty()) return;
+        // Quick exit if not active
+        if (!isActive()) return;
         
         long now = System.currentTimeMillis();
         if (now - lastStatsLogTime < STATS_LOG_INTERVAL_MS) return;
