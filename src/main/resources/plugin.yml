@@ -1,0 +1,19 @@
+name: FixedWorld
+version: '1.0-SNAPSHOT'
+main: com.kaveenk.fixedWorld.FixedWorld
+api-version: '1.21'
+prefix: FixedWorld
+authors: [ kaveen ]
+description: Keep your minecraft world magically fixed.
+
+commands:
+  fixedworld:
+    description: Manage fixed world settings
+    usage: /fixedworld <fix|unfix|status> [seconds]
+    permission: fixedworld.admin
+    aliases: [fw]
+
+permissions:
+  fixedworld.admin:
+    description: Allows use of FixedWorld commands
+    default: op
