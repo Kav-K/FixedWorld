@@ -8,8 +8,10 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 
+import java.util.List;
+
 /**
- * Listens for explosion events (TNT, creepers, beds, etc.) and schedules restoration.
+ * Handles all explosion events (TNT, creepers, beds, respawn anchors, etc.)
  */
 public class ExplosionListener implements Listener {
 
@@ -19,23 +21,17 @@ public class ExplosionListener implements Listener {
         this.snapshotManager = snapshotManager;
     }
 
-    /**
-     * Handles entity-caused explosions (creepers, TNT entities, fireballs, etc.)
-     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onEntityExplode(EntityExplodeEvent event) {
-        for (Block block : event.blockList()) {
-            snapshotManager.captureAndScheduleRestore(block);
-        }
+        captureBlocks(event.blockList());
     }
 
-    /**
-     * Handles block-caused explosions (beds in nether, respawn anchors, etc.)
-     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockExplode(BlockExplodeEvent event) {
-        for (Block block : event.blockList()) {
-            snapshotManager.captureAndScheduleRestore(block);
-        }
+        captureBlocks(event.blockList());
+    }
+
+    private void captureBlocks(List<Block> blocks) {
+        blocks.forEach(snapshotManager::captureAndScheduleRestore);
     }
 }

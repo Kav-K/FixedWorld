@@ -6,6 +6,7 @@ import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.block.data.BlockData;
 import org.bukkit.scheduler.BukkitRunnable;
 
 import java.util.Map;
@@ -49,12 +50,29 @@ public class WorldSnapshotManager {
     // Fire suppression duration (5 minutes)
     private static final long FIRE_SUPPRESSION_MS = 5 * 60 * 1000L;
 
+    // Reference to chunk scanner for ABSOLUTE mode
+    private ChunkScanner chunkScanner;
+
     public WorldSnapshotManager(FixedWorld plugin) {
         this.plugin = plugin;
 
         // Schedule periodic cleanup of expired cooldowns to prevent memory buildup
         // Runs every 5 minutes (6000 ticks)
         plugin.getServer().getScheduler().runTaskTimer(plugin, this::cleanupExpiredCooldowns, 6000L, 6000L);
+    }
+
+    /**
+     * Sets the chunk scanner for ABSOLUTE mode.
+     */
+    public void setChunkScanner(ChunkScanner scanner) {
+        this.chunkScanner = scanner;
+    }
+
+    /**
+     * Gets the chunk scanner.
+     */
+    public ChunkScanner getChunkScanner() {
+        return chunkScanner;
     }
 
     /**
@@ -76,6 +94,11 @@ public class WorldSnapshotManager {
         long ticks = seconds * 20L;
         fixedWorlds.put(world.getUID(), ticks);
         plugin.getLogger().info("Enabled fixed world for '" + world.getName() + "' with " + seconds + "s restore delay");
+
+        // Notify chunk scanner to capture baselines
+        if (chunkScanner != null) {
+            chunkScanner.onFixedWorldEnabled(world);
+        }
     }
 
     /**
@@ -92,6 +115,11 @@ public class WorldSnapshotManager {
         restorationCooldowns.keySet().removeIf(key -> key.startsWith(worldPrefix));
         fireSuppressionZones.keySet().removeIf(key -> key.startsWith(worldPrefix));
         plugin.getLogger().info("Disabled fixed world for '" + world.getName() + "'");
+
+        // Notify chunk scanner to clear baselines
+        if (chunkScanner != null) {
+            chunkScanner.onFixedWorldDisabled(world);
+        }
     }
 
     /**
@@ -202,6 +230,34 @@ public class WorldSnapshotManager {
     }
 
     /**
+     * Capture from baseline BlockData (used by ChunkScanner when it detects changes).
+     * This is called when the scanner finds a block that differs from its baseline snapshot.
+     *
+     * @param location The block location
+     * @param baselineData The original block data from the chunk snapshot
+     */
+    public void captureFromBaselineAndScheduleRestore(Location location, BlockData baselineData) {
+        World world = location.getWorld();
+        if (!isFixedWorld(world)) {
+            return;
+        }
+
+        String locationKey = getLocationKey(location);
+
+        // Skip if in cooldown
+        if (isInCooldown(locationKey)) {
+            return;
+        }
+
+        // Only capture if we don't already have this block's original state
+        if (!originalSnapshots.containsKey(locationKey)) {
+            originalSnapshots.put(locationKey, new BlockSnapshot(location, baselineData));
+        }
+
+        scheduleRestoration(locationKey, world);
+    }
+
+    /**
      * Schedule a restoration task for a block location.
      */
     private void scheduleRestoration(String locationKey, World world) {
@@ -245,6 +301,11 @@ public class WorldSnapshotManager {
             // Mark this zone as fire-suppressed for 5 minutes
             // This prevents fire from spreading into restoration areas
             markFireSuppressionZone(snapshot.getLocation());
+
+            // Clear the detected change from chunk scanner
+            if (chunkScanner != null) {
+                chunkScanner.clearDetectedChange(locationKey);
+            }
         }
     }
 
@@ -303,7 +364,6 @@ public class WorldSnapshotManager {
                         (zoneX + dx) + ":" + (zoneY + dy) + ":" + (zoneZ + dz);
                     Long expiry = fireSuppressionZones.get(zoneKey);
                     if (expiry != null && currentTime < expiry) {
-                        plugin.getLogger().info("Block is in fire-suppressed zone: " + zoneKey);
                         return true;
                     }
                 }
@@ -313,34 +373,27 @@ public class WorldSnapshotManager {
     }
 
     /**
-     * Clears fire blocks directly adjacent to a restored block (6 faces only).
-     * This is O(6) constant time, highly scalable even with millions of restorations.
-     * 
-     * The cascading effect still works: as each block restores and clears its adjacent fire,
-     * the fire suppression propagates outward naturally with the restoration wave.
+     * Clears fire blocks within a 3-block radius of a restored block.
+     * This is O(343) = O(1) constant time, still highly scalable.
      */
     private void clearAdjacentFire(Block restoredBlock) {
-        // Only check the 6 faces 
-        Block[] adjacentBlocks = {
-            restoredBlock.getRelative(1, 0, 0),
-            restoredBlock.getRelative(-1, 0, 0),
-            restoredBlock.getRelative(0, 1, 0),
-            restoredBlock.getRelative(0, -1, 0),
-            restoredBlock.getRelative(0, 0, 1),
-            restoredBlock.getRelative(0, 0, -1)
-        };
-
         long currentTime = System.currentTimeMillis();
         
-        for (Block adjacent : adjacentBlocks) {
-            Material type = adjacent.getType();
-            if (type == Material.FIRE || type == Material.SOUL_FIRE) {
-                // Set cooldown to prevent the fire removal from being re-captured
-                String fireLocationKey = getLocationKey(adjacent.getLocation());
-                restorationCooldowns.put(fireLocationKey, currentTime + RESTORATION_COOLDOWN_MS);
-                
-                // Remove fire without physics
-                adjacent.setType(Material.AIR, false);
+        // Check 7x7x7 cube (3 blocks in each direction)
+        for (int dx = -3; dx <= 3; dx++) {
+            for (int dy = -3; dy <= 3; dy++) {
+                for (int dz = -3; dz <= 3; dz++) {
+                    Block check = restoredBlock.getRelative(dx, dy, dz);
+                    Material type = check.getType();
+                    if (type == Material.FIRE || type == Material.SOUL_FIRE) {
+                        // Set cooldown to prevent the fire removal from being re-captured
+                        String fireLocationKey = getLocationKey(check.getLocation());
+                        restorationCooldowns.put(fireLocationKey, currentTime + RESTORATION_COOLDOWN_MS);
+                        
+                        // Remove fire without physics
+                        check.setType(Material.AIR, false);
+                    }
+                }
             }
         }
     }
@@ -359,6 +412,11 @@ public class WorldSnapshotManager {
         fixedWorlds.clear();
         restorationCooldowns.clear();
         fireSuppressionZones.clear();
+
+        // Shutdown chunk scanner
+        if (chunkScanner != null) {
+            chunkScanner.shutdown();
+        }
     }
 
     /**

@@ -7,6 +7,7 @@ import com.kaveenk.fixedWorld.listeners.player.BlockPlaceListener;
 import com.kaveenk.fixedWorld.listeners.player.PlayerInteractionListener;
 import com.kaveenk.fixedWorld.listeners.world.ExplosionListener;
 import com.kaveenk.fixedWorld.listeners.world.NaturalEventListener;
+import com.kaveenk.fixedWorld.managers.ChunkScanner;
 import com.kaveenk.fixedWorld.managers.WorldSnapshotManager;
 import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -19,6 +20,10 @@ public final class FixedWorld extends JavaPlugin {
     public void onEnable() {
         // Initialize the snapshot manager
         snapshotManager = new WorldSnapshotManager(this);
+
+        // Initialize chunk scanner for ABSOLUTE mode (catches /fill, /setblock, plugin changes, etc.)
+        ChunkScanner chunkScanner = new ChunkScanner(this, snapshotManager);
+        snapshotManager.setChunkScanner(chunkScanner);
 
         // Register command
         FixedWorldCommand command = new FixedWorldCommand(snapshotManager);
@@ -39,6 +44,9 @@ public final class FixedWorld extends JavaPlugin {
         
         // Entity listeners
         pm.registerEvents(new EntityInteractionListener(snapshotManager), this);
+        
+        // Chunk scanner (for new chunk loads)
+        pm.registerEvents(chunkScanner, this);
 
         getLogger().info("FixedWorld enabled! Use /fixedworld fix <seconds> to enable.");
     }

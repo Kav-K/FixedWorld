@@ -10,17 +10,15 @@ import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 /**
  * Handles /fixedworld commands.
- * Usage:
- *   /fixedworld fix <seconds> - Enable fixed world with restore delay
- *   /fixedworld unfix - Disable fixed world
- *   /fixedworld status - Show current status
  */
 public class FixedWorldCommand implements CommandExecutor, TabCompleter {
+
+    private static final List<String> SUB_COMMANDS = List.of("fix", "unfix", "status");
+    private static final List<String> DELAY_SUGGESTIONS = List.of("5", "10", "30", "60", "300");
 
     private final WorldSnapshotManager snapshotManager;
 
@@ -45,15 +43,12 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        String subCommand = args[0].toLowerCase();
-
-        switch (subCommand) {
+        switch (args[0].toLowerCase()) {
             case "fix" -> handleFix(player, args);
             case "unfix" -> handleUnfix(player);
             case "status" -> handleStatus(player);
             default -> sendUsage(player);
         }
-
         return true;
     }
 
@@ -71,47 +66,38 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        if (seconds < 1) {
-            player.sendMessage(ChatColor.RED + "Delay must be at least 1 second.");
-            return;
-        }
-
-        if (seconds > 3600) {
-            player.sendMessage(ChatColor.RED + "Delay cannot exceed 3600 seconds (1 hour).");
+        if (seconds < 1 || seconds > 3600) {
+            player.sendMessage(ChatColor.RED + "Delay must be between 1 and 3600 seconds.");
             return;
         }
 
         World world = player.getWorld();
         snapshotManager.enableFixedWorld(world, seconds);
-
         player.sendMessage(ChatColor.GREEN + "Fixed world enabled for '" + world.getName() + "'!");
         player.sendMessage(ChatColor.GRAY + "Blocks will restore " + seconds + " seconds after being changed.");
     }
 
     private void handleUnfix(Player player) {
         World world = player.getWorld();
-
         if (!snapshotManager.isFixedWorld(world)) {
             player.sendMessage(ChatColor.YELLOW + "This world is not currently fixed.");
             return;
         }
-
         snapshotManager.disableFixedWorld(world);
         player.sendMessage(ChatColor.GREEN + "Fixed world disabled for '" + world.getName() + "'.");
     }
 
     private void handleStatus(Player player) {
         World world = player.getWorld();
-
-        if (snapshotManager.isFixedWorld(world)) {
-            int delay = snapshotManager.getRestoreDelaySeconds(world);
-            int pending = snapshotManager.getPendingCount(world);
-            player.sendMessage(ChatColor.GREEN + "Fixed World Status for '" + world.getName() + "':");
-            player.sendMessage(ChatColor.GRAY + "  Restore delay: " + delay + " seconds");
-            player.sendMessage(ChatColor.GRAY + "  Pending restorations: " + pending);
-        } else {
+        if (!snapshotManager.isFixedWorld(world)) {
             player.sendMessage(ChatColor.YELLOW + "This world is not currently fixed.");
+            return;
         }
+        int delay = snapshotManager.getRestoreDelaySeconds(world);
+        int pending = snapshotManager.getPendingCount(world);
+        player.sendMessage(ChatColor.GREEN + "Fixed World Status for '" + world.getName() + "':");
+        player.sendMessage(ChatColor.GRAY + "  Restore delay: " + delay + " seconds");
+        player.sendMessage(ChatColor.GRAY + "  Pending restorations: " + pending);
     }
 
     private void sendUsage(Player player) {
@@ -123,21 +109,13 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        List<String> completions = new ArrayList<>();
-
         if (args.length == 1) {
-            List<String> subCommands = Arrays.asList("fix", "unfix", "status");
             String partial = args[0].toLowerCase();
-            for (String sub : subCommands) {
-                if (sub.startsWith(partial)) {
-                    completions.add(sub);
-                }
-            }
-        } else if (args.length == 2 && args[0].equalsIgnoreCase("fix")) {
-            // Suggest common delay values
-            completions.addAll(Arrays.asList("5", "10", "30", "60", "300"));
+            return SUB_COMMANDS.stream().filter(s -> s.startsWith(partial)).toList();
         }
-
-        return completions;
+        if (args.length == 2 && args[0].equalsIgnoreCase("fix")) {
+            return new ArrayList<>(DELAY_SUGGESTIONS);
+        }
+        return List.of();
     }
 }
