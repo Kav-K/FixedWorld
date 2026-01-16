@@ -10,6 +10,7 @@ import org.bukkit.block.data.BlockData;
 import org.bukkit.scheduler.BukkitRunnable;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -40,6 +41,10 @@ public class WorldSnapshotManager {
     // Value: timestamp when suppression expires
     private final Map<String, Long> fireSuppressionZones = new ConcurrentHashMap<>();
 
+    // Tracks blocks captured via ChunkScanner baseline (without tile entity data)
+    // These can be overridden by event-based captures which have full data
+    private final Set<String> baselineOnlyCaptures = ConcurrentHashMap.newKeySet();
+
     // Cooldown duration in milliseconds after restoration (250ms)
     // This prevents restored blocks from immediately triggering new events
     private static final long RESTORATION_COOLDOWN_MS = 250L;
@@ -52,6 +57,9 @@ public class WorldSnapshotManager {
 
     // Reference to chunk scanner for ABSOLUTE mode
     private ChunkScanner chunkScanner;
+
+    // Whether absolute mode is enabled (ChunkScanner active)
+    private boolean absoluteModeEnabled = false;
 
     public WorldSnapshotManager(FixedWorld plugin) {
         this.plugin = plugin;
@@ -76,6 +84,44 @@ public class WorldSnapshotManager {
     }
 
     /**
+     * Checks if absolute mode is enabled.
+     */
+    public boolean isAbsoluteModeEnabled() {
+        return absoluteModeEnabled;
+    }
+
+    /**
+     * Enables or disables absolute mode (ChunkScanner).
+     * When enabled, the ChunkScanner will periodically scan for block changes
+     * that bypass events (e.g., /fill, /setblock, plugin modifications).
+     */
+    public void setAbsoluteModeEnabled(boolean enabled) {
+        this.absoluteModeEnabled = enabled;
+        
+        if (chunkScanner != null) {
+            if (enabled) {
+                // Capture baselines for all currently fixed worlds
+                for (UUID worldId : fixedWorlds.keySet()) {
+                    World world = plugin.getServer().getWorld(worldId);
+                    if (world != null) {
+                        chunkScanner.onFixedWorldEnabled(world);
+                    }
+                }
+                plugin.getLogger().info("Absolute mode ENABLED - ChunkScanner active");
+            } else {
+                // Clear all baselines
+                for (UUID worldId : fixedWorlds.keySet()) {
+                    World world = plugin.getServer().getWorld(worldId);
+                    if (world != null) {
+                        chunkScanner.onFixedWorldDisabled(world);
+                    }
+                }
+                plugin.getLogger().info("Absolute mode DISABLED - ChunkScanner inactive");
+            }
+        }
+    }
+
+    /**
      * Removes expired cooldowns and fire suppression zones to prevent memory buildup.
      */
     private void cleanupExpiredCooldowns() {
@@ -95,8 +141,8 @@ public class WorldSnapshotManager {
         fixedWorlds.put(world.getUID(), ticks);
         plugin.getLogger().info("Enabled fixed world for '" + world.getName() + "' with " + seconds + "s restore delay");
 
-        // Notify chunk scanner to capture baselines
-        if (chunkScanner != null) {
+        // Notify chunk scanner to capture baselines (only if absolute mode is enabled)
+        if (absoluteModeEnabled && chunkScanner != null) {
             chunkScanner.onFixedWorldEnabled(world);
         }
     }
@@ -114,6 +160,7 @@ public class WorldSnapshotManager {
         pendingRestorations.keySet().removeIf(key -> key.startsWith(worldPrefix));
         restorationCooldowns.keySet().removeIf(key -> key.startsWith(worldPrefix));
         fireSuppressionZones.keySet().removeIf(key -> key.startsWith(worldPrefix));
+        baselineOnlyCaptures.removeIf(key -> key.startsWith(worldPrefix));
         plugin.getLogger().info("Disabled fixed world for '" + world.getName() + "'");
 
         // Notify chunk scanner to clear baselines
@@ -173,8 +220,8 @@ public class WorldSnapshotManager {
 
     /**
      * Capture a block's state before it changes and schedule restoration.
-     * If the block was already captured (pending restoration), this is a no-op
-     * to preserve the original state.
+     * Event-based captures have PRIORITY over ChunkScanner baseline captures
+     * because they preserve tile entity data (signs, chests, etc.).
      *
      * @param block The block about to change
      */
@@ -191,11 +238,15 @@ public class WorldSnapshotManager {
             return;
         }
 
-        // Only capture if we don't already have this block's original state
-        // This ensures we restore to the state when fixed world was enabled,
-        // not intermediate states from multiple changes
-        if (!originalSnapshots.containsKey(locationKey)) {
+        // Check if we should capture
+        // - If no snapshot exists, capture
+        // - If only a baseline capture exists, OVERRIDE with full capture (preserves tile entity data)
+        boolean shouldCapture = !originalSnapshots.containsKey(locationKey) 
+                                || baselineOnlyCaptures.contains(locationKey);
+
+        if (shouldCapture) {
             originalSnapshots.put(locationKey, new BlockSnapshot(block));
+            baselineOnlyCaptures.remove(locationKey);  // This is now a full capture
         }
 
         scheduleRestoration(locationKey, world);
@@ -203,8 +254,8 @@ public class WorldSnapshotManager {
 
     /**
      * Capture a block state (for cases where we have the previous state, like block placement).
-     * If the block was already captured (pending restoration), this is a no-op
-     * to preserve the original state.
+     * Event-based captures have PRIORITY over ChunkScanner baseline captures
+     * because they preserve tile entity data (signs, chests, etc.).
      *
      * @param blockState The block state to capture
      */
@@ -221,9 +272,15 @@ public class WorldSnapshotManager {
             return;
         }
 
-        // Only capture if we don't already have this block's original state
-        if (!originalSnapshots.containsKey(locationKey)) {
+        // Check if we should capture
+        // - If no snapshot exists, capture
+        // - If only a baseline capture exists, OVERRIDE with full capture (preserves tile entity data)
+        boolean shouldCapture = !originalSnapshots.containsKey(locationKey) 
+                                || baselineOnlyCaptures.contains(locationKey);
+
+        if (shouldCapture) {
             originalSnapshots.put(locationKey, new BlockSnapshot(blockState));
+            baselineOnlyCaptures.remove(locationKey);  // This is now a full capture
         }
 
         scheduleRestoration(locationKey, world);
@@ -231,7 +288,8 @@ public class WorldSnapshotManager {
 
     /**
      * Capture from baseline BlockData (used by ChunkScanner when it detects changes).
-     * This is called when the scanner finds a block that differs from its baseline snapshot.
+     * This is LOW PRIORITY - it will NOT override event-based captures which have full tile entity data.
+     * Only captures if no snapshot exists yet.
      *
      * @param location The block location
      * @param baselineData The original block data from the chunk snapshot
@@ -250,8 +308,10 @@ public class WorldSnapshotManager {
         }
 
         // Only capture if we don't already have this block's original state
+        // NEVER override existing captures (they may have tile entity data we don't have)
         if (!originalSnapshots.containsKey(locationKey)) {
             originalSnapshots.put(locationKey, new BlockSnapshot(location, baselineData));
+            baselineOnlyCaptures.add(locationKey);  // Mark as baseline-only (can be overridden)
         }
 
         scheduleRestoration(locationKey, world);
@@ -286,6 +346,7 @@ public class WorldSnapshotManager {
     private void restoreBlock(String locationKey) {
         BlockSnapshot snapshot = originalSnapshots.remove(locationKey);
         pendingRestorations.remove(locationKey);
+        baselineOnlyCaptures.remove(locationKey);
 
         if (snapshot != null) {
             // Set cooldown BEFORE restoring to prevent any triggered events from re-capturing
@@ -295,7 +356,6 @@ public class WorldSnapshotManager {
             snapshot.restore();
 
             // Clear fire adjacent to the restored block to prevent re-burning
-            // Uses O(6) constant time - only checks the 6 direct neighbors
             clearAdjacentFire(snapshot.getLocation().getBlock());
 
             // Mark this zone as fire-suppressed for 5 minutes
@@ -412,6 +472,7 @@ public class WorldSnapshotManager {
         fixedWorlds.clear();
         restorationCooldowns.clear();
         fireSuppressionZones.clear();
+        baselineOnlyCaptures.clear();
 
         // Shutdown chunk scanner
         if (chunkScanner != null) {
