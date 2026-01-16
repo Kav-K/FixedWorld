@@ -6,7 +6,10 @@ import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
+import org.bukkit.block.data.Bisected;
 import org.bukkit.block.data.BlockData;
+import org.bukkit.block.data.type.Bed;
 import org.bukkit.scheduler.BukkitRunnable;
 
 import java.util.Map;
@@ -244,12 +247,19 @@ public class WorldSnapshotManager {
         boolean shouldCapture = !originalSnapshots.containsKey(locationKey) 
                                 || baselineOnlyCaptures.contains(locationKey);
 
+        // Capture the block data BEFORE any world changes
+        BlockData capturedData = block.getBlockData();
+
         if (shouldCapture) {
             originalSnapshots.put(locationKey, new BlockSnapshot(block));
             baselineOnlyCaptures.remove(locationKey);  // This is now a full capture
         }
 
         scheduleRestoration(locationKey, world);
+
+        // Also capture linked blocks (other half of doors, beds, tall plants)
+        // Pass the captured data since the block might be destroyed after this
+        captureLinkedBlocks(block, capturedData);
     }
 
     /**
@@ -278,9 +288,84 @@ public class WorldSnapshotManager {
         boolean shouldCapture = !originalSnapshots.containsKey(locationKey) 
                                 || baselineOnlyCaptures.contains(locationKey);
 
+        // Get the block data from the state BEFORE any world changes
+        BlockData capturedData = blockState.getBlockData();
+
         if (shouldCapture) {
             originalSnapshots.put(locationKey, new BlockSnapshot(blockState));
             baselineOnlyCaptures.remove(locationKey);  // This is now a full capture
+        }
+
+        scheduleRestoration(locationKey, world);
+
+        // Also capture linked blocks (other half of doors, beds, tall plants)
+        // Pass the captured data since the block might be destroyed after this
+        captureLinkedBlocks(blockState.getBlock(), capturedData);
+    }
+
+    /**
+     * Captures linked blocks for multi-block structures (doors, beds, tall plants).
+     * This ensures both halves are captured and will restore together.
+     *
+     * @param block The primary block location
+     * @param capturedData The block data that was captured (use this instead of current world state)
+     */
+    private void captureLinkedBlocks(Block block, BlockData capturedData) {
+        // Handle bisected blocks (doors, tall flowers, tall grass, etc.)
+        if (capturedData instanceof Bisected bisected) {
+            Block otherHalf;
+            if (bisected.getHalf() == Bisected.Half.TOP) {
+                otherHalf = block.getRelative(BlockFace.DOWN);
+            } else {
+                otherHalf = block.getRelative(BlockFace.UP);
+            }
+
+            // Capture the other half - it should still exist at this point
+            // Check if it's a bisected block of the same material
+            BlockData otherData = otherHalf.getBlockData();
+            if (otherData instanceof Bisected && otherData.getMaterial() == capturedData.getMaterial()) {
+                captureLinkedBlockInternal(otherHalf);
+            }
+        }
+
+        // Handle beds (head and foot parts)
+        if (capturedData instanceof Bed bed) {
+            BlockFace facing = bed.getFacing();
+            Block otherPart;
+            if (bed.getPart() == Bed.Part.HEAD) {
+                // Head faces away from foot, so foot is behind
+                otherPart = block.getRelative(facing.getOppositeFace());
+            } else {
+                // Foot faces toward head
+                otherPart = block.getRelative(facing);
+            }
+
+            // Capture the other part if it's a bed of the same type
+            BlockData otherData = otherPart.getBlockData();
+            if (otherData instanceof Bed && otherData.getMaterial() == capturedData.getMaterial()) {
+                captureLinkedBlockInternal(otherPart);
+            }
+        }
+    }
+
+    /**
+     * Internal method to capture a linked block without triggering recursive linked block capture.
+     */
+    private void captureLinkedBlockInternal(Block block) {
+        World world = block.getWorld();
+        String locationKey = getLocationKey(block.getLocation());
+
+        // Skip if in cooldown or already captured with full data
+        if (isInCooldown(locationKey)) {
+            return;
+        }
+
+        boolean shouldCapture = !originalSnapshots.containsKey(locationKey) 
+                                || baselineOnlyCaptures.contains(locationKey);
+
+        if (shouldCapture) {
+            originalSnapshots.put(locationKey, new BlockSnapshot(block));
+            baselineOnlyCaptures.remove(locationKey);
         }
 
         scheduleRestoration(locationKey, world);
