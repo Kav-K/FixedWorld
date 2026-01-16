@@ -1,4 +1,4 @@
-package com.kaveenk.fixedWorld.listeners;
+package com.kaveenk.fixedWorld.listeners.world;
 
 import com.kaveenk.fixedWorld.managers.WorldSnapshotManager;
 import org.bukkit.block.Block;

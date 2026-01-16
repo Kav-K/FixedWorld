@@ -1,4 +1,4 @@
-package com.kaveenk.fixedWorld.listeners;
+package com.kaveenk.fixedWorld.listeners.entity;
 
 import com.kaveenk.fixedWorld.managers.WorldSnapshotManager;
 import org.bukkit.event.EventHandler;

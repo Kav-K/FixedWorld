@@ -1,7 +1,9 @@
-package com.kaveenk.fixedWorld.listeners;
+package com.kaveenk.fixedWorld.listeners.world;
 
 import com.kaveenk.fixedWorld.managers.WorldSnapshotManager;
+import org.bukkit.Material;
 import org.bukkit.block.Block;
+import org.bukkit.block.BlockState;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -16,11 +18,10 @@ import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.block.BlockSpreadEvent;
 import org.bukkit.event.block.LeavesDecayEvent;
 import org.bukkit.event.world.StructureGrowEvent;
-import org.bukkit.block.BlockState;
 
 /**
  * Listens for natural/environmental block changes and schedules restoration.
- * All natural events are captured and will restore after the configured delay.
+ * Also handles fire suppression in restoration zones.
  */
 public class NaturalEventListener implements Listener {
 
@@ -29,6 +30,43 @@ public class NaturalEventListener implements Listener {
     public NaturalEventListener(WorldSnapshotManager snapshotManager) {
         this.snapshotManager = snapshotManager;
     }
+
+    // ==================== FIRE SUPPRESSION (HIGH priority to cancel before capture) ====================
+
+    /**
+     * Cancel fire burning blocks in fire-suppressed zones.
+     */
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onBlockBurnSuppress(BlockBurnEvent event) {
+        if (snapshotManager.isFireSuppressed(event.getBlock())) {
+            event.setCancelled(true);
+        }
+    }
+
+    /**
+     * Cancel fire spreading in fire-suppressed zones.
+     */
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onFireSpreadSuppress(BlockSpreadEvent event) {
+        // Only suppress fire spread, not grass/mycelium spread
+        Material sourceType = event.getSource().getType();
+        if ((sourceType == Material.FIRE || sourceType == Material.SOUL_FIRE) 
+                && snapshotManager.isFireSuppressed(event.getBlock())) {
+            event.setCancelled(true);
+        }
+    }
+
+    /**
+     * Cancel fire ignition in fire-suppressed zones.
+     */
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onBlockIgniteSuppress(BlockIgniteEvent event) {
+        if (snapshotManager.isFireSuppressed(event.getBlock())) {
+            event.setCancelled(true);
+        }
+    }
+
+    // ==================== CAPTURE EVENTS (MONITOR priority) ====================
 
     /**
      * Block burned by fire - capture and restore.

@@ -3,6 +3,7 @@ package com.kaveenk.fixedWorld.managers;
 import com.kaveenk.fixedWorld.FixedWorld;
 import com.kaveenk.fixedWorld.models.BlockSnapshot;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.scheduler.BukkitRunnable;
@@ -33,9 +34,20 @@ public class WorldSnapshotManager {
     // Maps location key to the timestamp (ms) when the cooldown expires
     private final Map<String, Long> restorationCooldowns = new ConcurrentHashMap<>();
 
+    // Fire suppression zones using spatial hashing for O(1) lookups
+    // Key format: "worldUUID:zoneX:zoneY:zoneZ" where zone coords = blockCoord / ZONE_SIZE
+    // Value: timestamp when suppression expires
+    private final Map<String, Long> fireSuppressionZones = new ConcurrentHashMap<>();
+
     // Cooldown duration in milliseconds after restoration (250ms)
     // This prevents restored blocks from immediately triggering new events
     private static final long RESTORATION_COOLDOWN_MS = 250L;
+
+    // Fire suppression zone size (32 blocks) - defines the virtual radius
+    private static final int FIRE_ZONE_SIZE = 32;
+
+    // Fire suppression duration (5 minutes)
+    private static final long FIRE_SUPPRESSION_MS = 5 * 60 * 1000L;
 
     public WorldSnapshotManager(FixedWorld plugin) {
         this.plugin = plugin;
@@ -46,11 +58,12 @@ public class WorldSnapshotManager {
     }
 
     /**
-     * Removes expired cooldowns from the map to prevent memory buildup.
+     * Removes expired cooldowns and fire suppression zones to prevent memory buildup.
      */
     private void cleanupExpiredCooldowns() {
         long currentTime = System.currentTimeMillis();
         restorationCooldowns.entrySet().removeIf(entry -> currentTime >= entry.getValue());
+        fireSuppressionZones.entrySet().removeIf(entry -> currentTime >= entry.getValue());
     }
 
     /**
@@ -77,6 +90,7 @@ public class WorldSnapshotManager {
         originalSnapshots.keySet().removeIf(key -> key.startsWith(worldPrefix));
         pendingRestorations.keySet().removeIf(key -> key.startsWith(worldPrefix));
         restorationCooldowns.keySet().removeIf(key -> key.startsWith(worldPrefix));
+        fireSuppressionZones.keySet().removeIf(key -> key.startsWith(worldPrefix));
         plugin.getLogger().info("Disabled fixed world for '" + world.getName() + "'");
     }
 
@@ -223,6 +237,111 @@ public class WorldSnapshotManager {
             restorationCooldowns.put(locationKey, currentTime + RESTORATION_COOLDOWN_MS);
 
             snapshot.restore();
+
+            // Clear fire adjacent to the restored block to prevent re-burning
+            // Uses O(6) constant time - only checks the 6 direct neighbors
+            clearAdjacentFire(snapshot.getLocation().getBlock());
+
+            // Mark this zone as fire-suppressed for 5 minutes
+            // This prevents fire from spreading into restoration areas
+            markFireSuppressionZone(snapshot.getLocation());
+        }
+    }
+
+    /**
+     * Creates a zone key for fire suppression spatial hashing.
+     * Zones are 32x32x32 block cubes.
+     */
+    private String getZoneKey(World world, int x, int y, int z) {
+        int zoneX = Math.floorDiv(x, FIRE_ZONE_SIZE);
+        int zoneY = Math.floorDiv(y, FIRE_ZONE_SIZE);
+        int zoneZ = Math.floorDiv(z, FIRE_ZONE_SIZE);
+        return world.getUID().toString() + ":" + zoneX + ":" + zoneY + ":" + zoneZ;
+    }
+
+    /**
+     * Marks a fire suppression zone around the given location.
+     * The zone will suppress fire spread for 5 minutes.
+     */
+    private void markFireSuppressionZone(Location loc) {
+        String zoneKey = getZoneKey(loc.getWorld(), loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
+        long expiry = System.currentTimeMillis() + FIRE_SUPPRESSION_MS;
+        
+        // Only update if this extends the suppression time
+        fireSuppressionZones.merge(zoneKey, expiry, Math::max);
+    }
+
+    /**
+     * Checks if a block is in a fire-suppressed zone.
+     * Uses spatial hashing for O(1) lookup - checks the block's zone plus adjacent zones
+     * to handle blocks near zone boundaries.
+     *
+     * @param block The block to check
+     * @return true if fire should be suppressed at this location
+     */
+    public boolean isFireSuppressed(Block block) {
+        World world = block.getWorld();
+        int x = block.getX();
+        int y = block.getY();
+        int z = block.getZ();
+
+        // Calculate which zone this block is in
+        int zoneX = Math.floorDiv(x, FIRE_ZONE_SIZE);
+        int zoneY = Math.floorDiv(y, FIRE_ZONE_SIZE);
+        int zoneZ = Math.floorDiv(z, FIRE_ZONE_SIZE);
+
+        long currentTime = System.currentTimeMillis();
+        UUID worldUID = world.getUID();
+
+        // Check this zone and all 26 neighbors (3x3x3 cube of zones)
+        // This ensures we catch blocks near zone boundaries
+        // Total: 27 HashMap lookups = O(1) constant time
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    String zoneKey = worldUID.toString() + ":" + 
+                        (zoneX + dx) + ":" + (zoneY + dy) + ":" + (zoneZ + dz);
+                    Long expiry = fireSuppressionZones.get(zoneKey);
+                    if (expiry != null && currentTime < expiry) {
+                        plugin.getLogger().info("Block is in fire-suppressed zone: " + zoneKey);
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Clears fire blocks directly adjacent to a restored block (6 faces only).
+     * This is O(6) constant time, highly scalable even with millions of restorations.
+     * 
+     * The cascading effect still works: as each block restores and clears its adjacent fire,
+     * the fire suppression propagates outward naturally with the restoration wave.
+     */
+    private void clearAdjacentFire(Block restoredBlock) {
+        // Only check the 6 faces 
+        Block[] adjacentBlocks = {
+            restoredBlock.getRelative(1, 0, 0),
+            restoredBlock.getRelative(-1, 0, 0),
+            restoredBlock.getRelative(0, 1, 0),
+            restoredBlock.getRelative(0, -1, 0),
+            restoredBlock.getRelative(0, 0, 1),
+            restoredBlock.getRelative(0, 0, -1)
+        };
+
+        long currentTime = System.currentTimeMillis();
+        
+        for (Block adjacent : adjacentBlocks) {
+            Material type = adjacent.getType();
+            if (type == Material.FIRE || type == Material.SOUL_FIRE) {
+                // Set cooldown to prevent the fire removal from being re-captured
+                String fireLocationKey = getLocationKey(adjacent.getLocation());
+                restorationCooldowns.put(fireLocationKey, currentTime + RESTORATION_COOLDOWN_MS);
+                
+                // Remove fire without physics
+                adjacent.setType(Material.AIR, false);
+            }
         }
     }
 
@@ -239,6 +358,7 @@ public class WorldSnapshotManager {
         originalSnapshots.clear();
         fixedWorlds.clear();
         restorationCooldowns.clear();
+        fireSuppressionZones.clear();
     }
 
     /**
