@@ -220,8 +220,54 @@ public class RestorationQueue {
      * Gets statistics.
      */
     public String getStats() {
-        return String.format("Queued: %d, Restored: %d, Pending: %d",
-            totalQueued.get(), totalRestored.get(), pendingByLocation.size());
+        int pending = pendingByLocation.size();
+        int ready = countReadyToRestore();
+        return String.format("%d pending (%d ready now), %d restored total, %d/tick",
+            pending, ready, totalRestored.get(), blocksPerTick);
+    }
+    
+    /**
+     * Counts how many blocks are ready to restore right now.
+     */
+    public int countReadyToRestore() {
+        long now = System.currentTimeMillis();
+        int count = 0;
+        for (PendingRestoration p : queue) {
+            if (p.getRestoreTime() <= now) {
+                count++;
+            }
+        }
+        return count;
+    }
+    
+    /**
+     * Gets detailed stats for debugging.
+     */
+    public String getDetailedStats() {
+        long now = System.currentTimeMillis();
+        int pending = pendingByLocation.size();
+        int ready = 0;
+        long soonestMs = Long.MAX_VALUE;
+        long latestMs = 0;
+        
+        for (PendingRestoration p : queue) {
+            long timeUntil = p.getRestoreTime() - now;
+            if (timeUntil <= 0) {
+                ready++;
+            } else {
+                soonestMs = Math.min(soonestMs, timeUntil);
+                latestMs = Math.max(latestMs, timeUntil);
+            }
+        }
+        
+        String timing = "";
+        if (pending > ready && soonestMs != Long.MAX_VALUE) {
+            timing = String.format(", next batch in %.1fs, last in %.1fs", 
+                soonestMs / 1000.0, latestMs / 1000.0);
+        }
+        
+        return String.format("%d pending, %d ready to restore now, %d/tick%s",
+            pending, ready, blocksPerTick, timing);
     }
 
     /**

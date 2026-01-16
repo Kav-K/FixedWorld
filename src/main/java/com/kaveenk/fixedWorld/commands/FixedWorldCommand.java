@@ -110,18 +110,57 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
         int pending = snapshotManager.getPendingCount(world);
         boolean absoluteMode = snapshotManager.isAbsoluteModeEnabled();
         
-        player.sendMessage(ChatColor.GREEN + "Fixed World Status for '" + world.getName() + "':");
-        player.sendMessage(ChatColor.GRAY + "  Restore delay: " + delay + " seconds");
-        player.sendMessage(ChatColor.GRAY + "  Pending restorations: " + pending);
-        player.sendMessage(ChatColor.GRAY + "  Queue stats: " + snapshotManager.getQueueStats());
-        player.sendMessage(ChatColor.GRAY + "  Absolute mode: " + 
+        player.sendMessage(ChatColor.GREEN + "=== Fixed World Status: '" + world.getName() + "' ===");
+        player.sendMessage(ChatColor.GRAY + "Restore delay: " + ChatColor.WHITE + delay + "s");
+        player.sendMessage(ChatColor.AQUA + "--- Restoration Queue ---");
+        player.sendMessage(ChatColor.GRAY + "This world: " + ChatColor.WHITE + pending + " blocks");
+        player.sendMessage(ChatColor.GRAY + "Global: " + ChatColor.WHITE + snapshotManager.getDetailedQueueStats());
+        player.sendMessage(ChatColor.GRAY + "Absolute mode: " + 
                           (absoluteMode ? ChatColor.GREEN + "ON" : ChatColor.RED + "OFF"));
+        
+        // Show memory usage from snapshot manager
+        player.sendMessage(ChatColor.AQUA + "--- Memory Usage ---");
+        player.sendMessage(ChatColor.GRAY + "Block snapshots: " + ChatColor.WHITE + 
+                          String.format("%.2f MB", snapshotManager.getSnapshotsMemoryMB()));
         
         if (absoluteMode) {
             ChunkScanner scanner = snapshotManager.getChunkScanner();
             if (scanner != null) {
                 int chunks = scanner.getBaselineChunkCount(world);
-                player.sendMessage(ChatColor.GRAY + "  Baseline chunks: " + chunks);
+                int totalChunks = scanner.getTotalBaselineChunkCount();
+                int cached = scanner.getCachedSnapshotCount(world);
+                int totalCached = scanner.getTotalCachedSnapshotCount();
+                int pendingScans = scanner.getPendingScanCount();
+                int activeChunks = scanner.getActiveChunksCount();
+                
+                player.sendMessage(ChatColor.AQUA + "--- ChunkScanner (this world) ---");
+                player.sendMessage(ChatColor.GRAY + "Tracked chunks: " + ChatColor.WHITE + chunks);
+                player.sendMessage(ChatColor.GRAY + "Cached snapshots: " + ChatColor.WHITE + cached + 
+                                  ChatColor.DARK_GRAY + " (" + (chunks > 0 ? (cached * 100 / chunks) : 0) + "% cache hit)");
+                player.sendMessage(ChatColor.GRAY + "Active chunks: " + ChatColor.WHITE + activeChunks);
+                player.sendMessage(ChatColor.GRAY + "Pending deep scans: " + ChatColor.WHITE + pendingScans);
+                
+                player.sendMessage(ChatColor.AQUA + "--- ChunkScanner Memory ---");
+                player.sendMessage(ChatColor.GRAY + "Signatures: " + ChatColor.WHITE + 
+                                  String.format("%.2f MB", scanner.getSignaturesMemoryMB()) + 
+                                  ChatColor.DARK_GRAY + " (" + totalChunks + " chunks)");
+                player.sendMessage(ChatColor.GRAY + "Snapshot cache: " + ChatColor.WHITE + 
+                                  String.format("%.2f MB", scanner.getSnapshotCacheMemoryMB()) +
+                                  ChatColor.DARK_GRAY + " (" + totalCached + " snapshots)");
+                player.sendMessage(ChatColor.GRAY + "Change tracking: " + ChatColor.WHITE + 
+                                  String.format("%.2f MB", scanner.getDetectedChangesMemoryMB()) +
+                                  ChatColor.DARK_GRAY + " (" + scanner.getDetectedChangesCount() + " entries)");
+                player.sendMessage(ChatColor.GOLD + "Total scanner: " + ChatColor.WHITE + 
+                                  String.format("%.2f MB", scanner.getTotalMemoryMB()));
+                
+                player.sendMessage(ChatColor.AQUA + "--- ChunkScanner Stats ---");
+                player.sendMessage(ChatColor.GRAY + "Signature scans: " + ChatColor.WHITE + scanner.getTotalSignatureScans());
+                player.sendMessage(ChatColor.GRAY + "Deep scans: " + ChatColor.WHITE + scanner.getTotalDeepScans());
+                player.sendMessage(ChatColor.GRAY + "Full verifications: " + ChatColor.WHITE + scanner.getTotalFullVerifications() +
+                                  ChatColor.DARK_GRAY + " (" + scanner.getTotalAsyncVerifications() + " async completed)");
+                player.sendMessage(ChatColor.GRAY + "Async in progress: " + ChatColor.WHITE + scanner.getAsyncVerificationsInProgress());
+                player.sendMessage(ChatColor.GRAY + "Changes detected: " + ChatColor.WHITE + scanner.getTotalChangesDetected());
+                player.sendMessage(ChatColor.GRAY + "Cache misses: " + ChatColor.WHITE + scanner.getTotalSnapshotCacheMisses());
             }
         }
     }

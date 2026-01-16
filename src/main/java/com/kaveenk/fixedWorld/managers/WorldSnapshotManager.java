@@ -611,4 +611,42 @@ public class WorldSnapshotManager {
     public String getQueueStats() {
         return restorationQueue.getStats();
     }
+
+    /**
+     * Gets detailed restoration queue statistics.
+     */
+    public String getDetailedQueueStats() {
+        return restorationQueue.getDetailedStats();
+    }
+
+    /**
+     * Estimates memory used by block snapshots in MB.
+     * Each snapshot includes: Location (~40 bytes), BlockData (~200 bytes), BlockState (~500 bytes avg)
+     */
+    public double getSnapshotsMemoryMB() {
+        // Estimated bytes per snapshot (conservative estimate)
+        int bytesPerSnapshot = 800;  // Location + BlockData + BlockState + Map overhead
+        return (originalSnapshots.size() * bytesPerSnapshot) / (1024.0 * 1024.0);
+    }
+
+    /**
+     * Gets the count of stored snapshots.
+     */
+    public int getSnapshotCount() {
+        return originalSnapshots.size();
+    }
+
+    /**
+     * Gets the count of restoration cooldowns.
+     */
+    public int getCooldownCount() {
+        return restorationCooldowns.size();
+    }
+
+    /**
+     * Gets the count of fire suppression zones.
+     */
+    public int getFireSuppressionZoneCount() {
+        return fireSuppressionZones.size();
+    }
 }
