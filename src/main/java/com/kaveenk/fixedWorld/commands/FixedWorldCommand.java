@@ -18,8 +18,9 @@ import java.util.List;
  */
 public class FixedWorldCommand implements CommandExecutor, TabCompleter {
 
-    private static final List<String> SUB_COMMANDS = List.of("fix", "unfix", "status", "absolute");
+    private static final List<String> SUB_COMMANDS = List.of("fix", "unfix", "status", "absolute", "batchsize");
     private static final List<String> DELAY_SUGGESTIONS = List.of("5", "10", "30", "60", "300");
+    private static final List<String> BATCH_SUGGESTIONS = List.of("25", "50", "100", "200");
     private static final List<String> ON_OFF = List.of("on", "off");
 
     private final WorldSnapshotManager snapshotManager;
@@ -50,6 +51,7 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
             case "unfix" -> handleUnfix(player);
             case "status" -> handleStatus(player);
             case "absolute" -> handleAbsolute(player, args);
+            case "batchsize" -> handleBatchSize(player, args);
             default -> sendUsage(player);
         }
         return true;
@@ -111,6 +113,7 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
         player.sendMessage(ChatColor.GREEN + "Fixed World Status for '" + world.getName() + "':");
         player.sendMessage(ChatColor.GRAY + "  Restore delay: " + delay + " seconds");
         player.sendMessage(ChatColor.GRAY + "  Pending restorations: " + pending);
+        player.sendMessage(ChatColor.GRAY + "  Queue stats: " + snapshotManager.getQueueStats());
         player.sendMessage(ChatColor.GRAY + "  Absolute mode: " + 
                           (absoluteMode ? ChatColor.GREEN + "ON" : ChatColor.RED + "OFF"));
         
@@ -147,12 +150,47 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
         }
     }
 
+    private void handleBatchSize(Player player, String[] args) {
+        if (args.length < 2) {
+            player.sendMessage(ChatColor.GRAY + "Batch size controls how many blocks restore per tick.");
+            player.sendMessage(ChatColor.GRAY + "Higher = faster but more lag potential.");
+            player.sendMessage(ChatColor.GRAY + "Usage: /fixedworld batchsize <blocks>");
+            return;
+        }
+
+        int blocks;
+        try {
+            blocks = Integer.parseInt(args[1]);
+        } catch (NumberFormatException e) {
+            player.sendMessage(ChatColor.RED + "Invalid number: " + args[1]);
+            return;
+        }
+
+        if (blocks < 1 || blocks > 1000) {
+            player.sendMessage(ChatColor.RED + "Batch size must be between 1 and 1000.");
+            return;
+        }
+
+        snapshotManager.setBlocksPerTick(blocks);
+        player.sendMessage(ChatColor.GREEN + "Batch size set to " + blocks + " blocks per tick.");
+        
+        // Helpful context
+        if (blocks <= 25) {
+            player.sendMessage(ChatColor.GRAY + "Low batch size - very smooth but slower restoration.");
+        } else if (blocks <= 100) {
+            player.sendMessage(ChatColor.GRAY + "Balanced batch size - good for most servers.");
+        } else {
+            player.sendMessage(ChatColor.GRAY + "High batch size - fast restoration, monitor for lag.");
+        }
+    }
+
     private void sendUsage(Player player) {
         player.sendMessage(ChatColor.GOLD + "=== FixedWorld Commands ===");
         player.sendMessage(ChatColor.YELLOW + "/fixedworld fix <seconds>" + ChatColor.GRAY + " - Enable fixed world");
         player.sendMessage(ChatColor.YELLOW + "/fixedworld unfix" + ChatColor.GRAY + " - Disable fixed world");
         player.sendMessage(ChatColor.YELLOW + "/fixedworld status" + ChatColor.GRAY + " - Show status");
         player.sendMessage(ChatColor.YELLOW + "/fixedworld absolute <on|off>" + ChatColor.GRAY + " - Toggle absolute mode");
+        player.sendMessage(ChatColor.YELLOW + "/fixedworld batchsize <n>" + ChatColor.GRAY + " - Set blocks per tick");
     }
 
     @Override
@@ -162,12 +200,16 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
             return SUB_COMMANDS.stream().filter(s -> s.startsWith(partial)).toList();
         }
         if (args.length == 2) {
-            if (args[0].equalsIgnoreCase("fix")) {
+            String subCmd = args[0].toLowerCase();
+            if (subCmd.equals("fix")) {
                 return new ArrayList<>(DELAY_SUGGESTIONS);
             }
-            if (args[0].equalsIgnoreCase("absolute")) {
+            if (subCmd.equals("absolute")) {
                 String partial = args[1].toLowerCase();
                 return ON_OFF.stream().filter(s -> s.startsWith(partial)).toList();
+            }
+            if (subCmd.equals("batchsize")) {
+                return new ArrayList<>(BATCH_SUGGESTIONS);
             }
         }
         return List.of();

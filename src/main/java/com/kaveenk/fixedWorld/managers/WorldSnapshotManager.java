@@ -10,7 +10,6 @@ import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.Bisected;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.type.Bed;
-import org.bukkit.scheduler.BukkitRunnable;
 
 import java.util.Map;
 import java.util.Set;
@@ -32,8 +31,8 @@ public class WorldSnapshotManager {
     // Key format: "worldUUID:x:y:z"
     private final Map<String, BlockSnapshot> originalSnapshots = new ConcurrentHashMap<>();
 
-    // Tracks pending restoration tasks to avoid duplicate scheduling
-    private final Map<String, Integer> pendingRestorations = new ConcurrentHashMap<>();
+    // Batched restoration queue - processes blocks gradually to avoid lag spikes
+    private final RestorationQueue restorationQueue;
 
     // Tracks recently restored blocks to prevent immediate re-capture (avoids loops)
     // Maps location key to the timestamp (ms) when the cooldown expires
@@ -67,9 +66,22 @@ public class WorldSnapshotManager {
     public WorldSnapshotManager(FixedWorld plugin) {
         this.plugin = plugin;
 
+        // Initialize the batched restoration queue
+        this.restorationQueue = new RestorationQueue(plugin);
+        this.restorationQueue.setOnRestorationComplete(this::onBlockRestored);
+
         // Schedule periodic cleanup of expired cooldowns to prevent memory buildup
         // Runs every 5 minutes (6000 ticks)
         plugin.getServer().getScheduler().runTaskTimer(plugin, this::cleanupExpiredCooldowns, 6000L, 6000L);
+    }
+
+    /**
+     * Configures how many blocks to restore per tick.
+     * Higher values = faster restoration but more lag potential.
+     * Default is 50 blocks per tick.
+     */
+    public void setBlocksPerTick(int blocks) {
+        restorationQueue.setBlocksPerTick(blocks);
     }
 
     /**
@@ -160,7 +172,7 @@ public class WorldSnapshotManager {
         // Clear all data for this world
         String worldPrefix = world.getUID().toString() + ":";
         originalSnapshots.keySet().removeIf(key -> key.startsWith(worldPrefix));
-        pendingRestorations.keySet().removeIf(key -> key.startsWith(worldPrefix));
+        restorationQueue.clearWorld(worldPrefix);
         restorationCooldowns.keySet().removeIf(key -> key.startsWith(worldPrefix));
         fireSuppressionZones.keySet().removeIf(key -> key.startsWith(worldPrefix));
         baselineOnlyCaptures.removeIf(key -> key.startsWith(worldPrefix));
@@ -403,54 +415,76 @@ public class WorldSnapshotManager {
     }
 
     /**
-     * Schedule a restoration task for a block location.
+     * Schedule a restoration for a block location.
+     * Uses the batched queue to avoid lag spikes when many blocks need restoration.
      */
     private void scheduleRestoration(String locationKey, World world) {
-        // Cancel existing restoration task if any (block changed again before restore)
-        Integer existingTaskId = pendingRestorations.get(locationKey);
-        if (existingTaskId != null) {
-            plugin.getServer().getScheduler().cancelTask(existingTaskId);
+        BlockSnapshot snapshot = originalSnapshots.get(locationKey);
+        if (snapshot == null) {
+            return;
         }
 
-        // Schedule new restoration
-        long delayTicks = getRestoreDelayTicks(world);
-        BukkitRunnable restoreTask = new BukkitRunnable() {
-            @Override
-            public void run() {
-                restoreBlock(locationKey);
-            }
-        };
+        // Calculate when to restore (current time + delay)
+        long delayMs = getRestoreDelayTicks(world) * 50L;  // Convert ticks to ms
+        long restoreTime = System.currentTimeMillis() + delayMs;
 
-        int taskId = restoreTask.runTaskLater(plugin, delayTicks).getTaskId();
-        pendingRestorations.put(locationKey, taskId);
+        // Queue the restoration
+        restorationQueue.queueRestoration(locationKey, snapshot, restoreTime);
     }
 
     /**
-     * Restore a block to its original state and clean up tracking data.
+     * Called by RestorationQueue when a block has been restored.
+     * Handles post-restoration cleanup.
      */
-    private void restoreBlock(String locationKey) {
-        BlockSnapshot snapshot = originalSnapshots.remove(locationKey);
-        pendingRestorations.remove(locationKey);
+    private void onBlockRestored(String locationKey) {
+        // Remove from snapshots (the queue already restored it)
+        originalSnapshots.remove(locationKey);
         baselineOnlyCaptures.remove(locationKey);
 
-        if (snapshot != null) {
-            // Set cooldown BEFORE restoring to prevent any triggered events from re-capturing
-            long currentTime = System.currentTimeMillis();
-            restorationCooldowns.put(locationKey, currentTime + RESTORATION_COOLDOWN_MS);
+        // Set cooldown to prevent immediate re-capture
+        long currentTime = System.currentTimeMillis();
+        restorationCooldowns.put(locationKey, currentTime + RESTORATION_COOLDOWN_MS);
 
-            snapshot.restore();
+        // Get the snapshot from queue to perform post-restoration tasks
+        // Note: The snapshot was already used for restoration, we just need the location
+        // We can parse it from the locationKey
+        Location location = parseLocationKey(locationKey);
+        if (location != null) {
+            Block block = location.getBlock();
+            
+            // Clear fire adjacent to the restored block
+            clearAdjacentFire(block);
 
-            // Clear fire adjacent to the restored block to prevent re-burning
-            clearAdjacentFire(snapshot.getLocation().getBlock());
+            // Mark zone as fire-suppressed
+            markFireSuppressionZone(location);
+        }
 
-            // Mark this zone as fire-suppressed for 5 minutes
-            // This prevents fire from spreading into restoration areas
-            markFireSuppressionZone(snapshot.getLocation());
+        // Clear the detected change from chunk scanner
+        if (chunkScanner != null) {
+            chunkScanner.clearDetectedChange(locationKey);
+        }
+    }
 
-            // Clear the detected change from chunk scanner
-            if (chunkScanner != null) {
-                chunkScanner.clearDetectedChange(locationKey);
-            }
+    /**
+     * Parses a location key back into a Location.
+     * Key format: "worldUUID:x:y:z"
+     */
+    private Location parseLocationKey(String locationKey) {
+        try {
+            String[] parts = locationKey.split(":");
+            if (parts.length != 4) return null;
+
+            UUID worldId = UUID.fromString(parts[0]);
+            World world = plugin.getServer().getWorld(worldId);
+            if (world == null) return null;
+
+            int x = Integer.parseInt(parts[1]);
+            int y = Integer.parseInt(parts[2]);
+            int z = Integer.parseInt(parts[3]);
+
+            return new Location(world, x, y, z);
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -548,11 +582,9 @@ public class WorldSnapshotManager {
      * Called on plugin disable.
      */
     public void shutdown() {
-        // Cancel all pending tasks
-        for (Integer taskId : pendingRestorations.values()) {
-            plugin.getServer().getScheduler().cancelTask(taskId);
-        }
-        pendingRestorations.clear();
+        // Shutdown restoration queue
+        restorationQueue.shutdown();
+        
         originalSnapshots.clear();
         fixedWorlds.clear();
         restorationCooldowns.clear();
@@ -570,8 +602,13 @@ public class WorldSnapshotManager {
      */
     public int getPendingCount(World world) {
         String worldPrefix = world.getUID().toString() + ":";
-        return (int) pendingRestorations.keySet().stream()
-                .filter(key -> key.startsWith(worldPrefix))
-                .count();
+        return restorationQueue.getPendingCount(worldPrefix);
+    }
+
+    /**
+     * Gets the restoration queue statistics.
+     */
+    public String getQueueStats() {
+        return restorationQueue.getStats();
     }
 }
