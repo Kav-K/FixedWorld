@@ -70,6 +70,11 @@ public final class FixedWorld extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        // Force a final synchronous flush before shutdown for extra safety
+        if (persistenceManager != null) {
+            persistenceManager.flushNow();
+        }
+
         // Shutdown persistence manager (flushes pending writes)
         if (persistenceManager != null) {
             persistenceManager.shutdown();

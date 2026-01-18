@@ -107,6 +107,22 @@ public class DatabaseManager {
                 )
             """);
 
+            // WAL entries for crash-resilient append-only capture
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS wal_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    world_uuid TEXT NOT NULL,
+                    x INTEGER NOT NULL,
+                    y INTEGER NOT NULL,
+                    z INTEGER NOT NULL,
+                    block_data TEXT NOT NULL,
+                    has_tile_entity INTEGER NOT NULL DEFAULT 0,
+                    tile_entity_nbt BLOB,
+                    restore_at_ms INTEGER NOT NULL,
+                    created_at_ms INTEGER NOT NULL
+                )
+            """);
+
             // Create indexes for fast queries
             stmt.execute("""
                 CREATE INDEX IF NOT EXISTS idx_pending_restore_time 
@@ -121,6 +137,16 @@ public class DatabaseManager {
             stmt.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_location 
                 ON pending_restorations(world_uuid, x, y, z)
+            """);
+
+            stmt.execute("""
+                CREATE INDEX IF NOT EXISTS idx_wal_restore_time 
+                ON wal_entries(restore_at_ms)
+            """);
+
+            stmt.execute("""
+                CREATE INDEX IF NOT EXISTS idx_wal_location_time
+                ON wal_entries(world_uuid, x, y, z, created_at_ms)
             """);
 
             // Insert schema version if not exists

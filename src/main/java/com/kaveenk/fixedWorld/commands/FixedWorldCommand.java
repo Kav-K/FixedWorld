@@ -18,9 +18,12 @@ import java.util.List;
  */
 public class FixedWorldCommand implements CommandExecutor, TabCompleter {
 
-    private static final List<String> SUB_COMMANDS = List.of("fix", "unfix", "status", "absolute", "batchsize");
+    private static final List<String> SUB_COMMANDS = List.of("fix", "unfix", "status", "absolute", "batchsize", "batchinterval", "flushinterval", "walinterval");
     private static final List<String> DELAY_SUGGESTIONS = List.of("5", "10", "30", "60", "300");
     private static final List<String> BATCH_SUGGESTIONS = List.of("25", "50", "100", "200");
+    private static final List<String> INTERVAL_SUGGESTIONS = List.of("1", "2", "5", "10", "20");
+    private static final List<String> FLUSH_SUGGESTIONS = List.of("20", "40", "100", "200", "400");
+    private static final List<String> WAL_SUGGESTIONS = List.of("1", "2", "5", "10");
     private static final List<String> ON_OFF = List.of("on", "off");
 
     private final WorldSnapshotManager snapshotManager;
@@ -52,6 +55,9 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
             case "status" -> handleStatus(player);
             case "absolute" -> handleAbsolute(player, args);
             case "batchsize" -> handleBatchSize(player, args);
+            case "batchinterval" -> handleBatchInterval(player, args);
+            case "flushinterval" -> handleFlushInterval(player, args);
+            case "walinterval" -> handleWalInterval(player, args);
             default -> sendUsage(player);
         }
         return true;
@@ -167,6 +173,16 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
         // Show persistence stats
         player.sendMessage(ChatColor.AQUA + "--- Database Persistence ---");
         player.sendMessage(ChatColor.GRAY + snapshotManager.getPersistenceStats());
+        int flushInterval = snapshotManager.getPersistenceFlushIntervalTicks();
+        if (flushInterval > 0) {
+            player.sendMessage(ChatColor.GRAY + "Full flush interval: " + ChatColor.WHITE +
+                flushInterval + " ticks (" + String.format("%.2f", flushInterval / 20.0) + "s)");
+        }
+        int walInterval = snapshotManager.getWalIntervalTicks();
+        if (walInterval > 0) {
+            player.sendMessage(ChatColor.GRAY + "WAL interval: " + ChatColor.WHITE +
+                walInterval + " ticks (" + String.format("%.2f", walInterval / 20.0) + "s)");
+        }
     }
 
     private void handleAbsolute(Player player, String[] args) {
@@ -227,6 +243,84 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
         }
     }
 
+    private void handleBatchInterval(Player player, String[] args) {
+        if (args.length < 2) {
+            player.sendMessage(ChatColor.GRAY + "Batch interval controls how often restorations run (in ticks).");
+            player.sendMessage(ChatColor.GRAY + "Lower = more frequent processing. 20 ticks = 1 second.");
+            player.sendMessage(ChatColor.GRAY + "Usage: /fixedworld batchinterval <ticks>");
+            return;
+        }
+
+        int ticks;
+        try {
+            ticks = Integer.parseInt(args[1]);
+        } catch (NumberFormatException e) {
+            player.sendMessage(ChatColor.RED + "Invalid number: " + args[1]);
+            return;
+        }
+
+        if (ticks < 1 || ticks > 200) {
+            player.sendMessage(ChatColor.RED + "Batch interval must be between 1 and 200 ticks.");
+            return;
+        }
+
+        snapshotManager.setBatchIntervalTicks(ticks);
+        player.sendMessage(ChatColor.GREEN + "Batch interval set to " + ticks + " ticks.");
+        player.sendMessage(ChatColor.GRAY + "That is " + String.format("%.2f", ticks / 20.0) + " seconds between batches.");
+    }
+
+    private void handleFlushInterval(Player player, String[] args) {
+        if (args.length < 2) {
+            player.sendMessage(ChatColor.GRAY + "Flush interval controls full DB flush frequency (in ticks).");
+            player.sendMessage(ChatColor.GRAY + "Lower = smaller crash-loss window, higher = less IO.");
+            player.sendMessage(ChatColor.GRAY + "Usage: /fixedworld flushinterval <ticks>");
+            return;
+        }
+
+        int ticks;
+        try {
+            ticks = Integer.parseInt(args[1]);
+        } catch (NumberFormatException e) {
+            player.sendMessage(ChatColor.RED + "Invalid number: " + args[1]);
+            return;
+        }
+
+        if (ticks < 20 || ticks > 1200) {
+            player.sendMessage(ChatColor.RED + "Flush interval must be between 20 and 1200 ticks.");
+            return;
+        }
+
+        snapshotManager.setPersistenceFlushIntervalTicks(ticks);
+        player.sendMessage(ChatColor.GREEN + "DB flush interval set to " + ticks + " ticks.");
+        player.sendMessage(ChatColor.GRAY + "That is " + String.format("%.2f", ticks / 20.0) + " seconds.");
+    }
+
+    private void handleWalInterval(Player player, String[] args) {
+        if (args.length < 2) {
+            player.sendMessage(ChatColor.GRAY + "WAL interval controls append-only log frequency (in ticks).");
+            player.sendMessage(ChatColor.GRAY + "Lower = stronger crash resilience, more IO.");
+            player.sendMessage(ChatColor.GRAY + "Usage: /fixedworld walinterval <ticks>");
+            return;
+        }
+
+        int ticks;
+        try {
+            ticks = Integer.parseInt(args[1]);
+        } catch (NumberFormatException e) {
+            player.sendMessage(ChatColor.RED + "Invalid number: " + args[1]);
+            return;
+        }
+
+        if (ticks < 1 || ticks > 200) {
+            player.sendMessage(ChatColor.RED + "WAL interval must be between 1 and 200 ticks.");
+            return;
+        }
+
+        snapshotManager.setWalIntervalTicks(ticks);
+        player.sendMessage(ChatColor.GREEN + "WAL interval set to " + ticks + " ticks.");
+        player.sendMessage(ChatColor.GRAY + "That is " + String.format("%.2f", ticks / 20.0) + " seconds.");
+    }
+
     private void sendUsage(Player player) {
         player.sendMessage(ChatColor.GOLD + "=== FixedWorld Commands ===");
         player.sendMessage(ChatColor.YELLOW + "/fixedworld fix <seconds>" + ChatColor.GRAY + " - Enable fixed world");
@@ -234,6 +328,9 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
         player.sendMessage(ChatColor.YELLOW + "/fixedworld status" + ChatColor.GRAY + " - Show status");
         player.sendMessage(ChatColor.YELLOW + "/fixedworld absolute <on|off>" + ChatColor.GRAY + " - Toggle absolute mode");
         player.sendMessage(ChatColor.YELLOW + "/fixedworld batchsize <n>" + ChatColor.GRAY + " - Set blocks per tick");
+        player.sendMessage(ChatColor.YELLOW + "/fixedworld batchinterval <ticks>" + ChatColor.GRAY + " - Set batch interval");
+        player.sendMessage(ChatColor.YELLOW + "/fixedworld flushinterval <ticks>" + ChatColor.GRAY + " - Set DB flush interval");
+        player.sendMessage(ChatColor.YELLOW + "/fixedworld walinterval <ticks>" + ChatColor.GRAY + " - Set WAL interval");
     }
 
     @Override
@@ -253,6 +350,15 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
             }
             if (subCmd.equals("batchsize")) {
                 return new ArrayList<>(BATCH_SUGGESTIONS);
+            }
+            if (subCmd.equals("batchinterval")) {
+                return new ArrayList<>(INTERVAL_SUGGESTIONS);
+            }
+            if (subCmd.equals("flushinterval")) {
+                return new ArrayList<>(FLUSH_SUGGESTIONS);
+            }
+            if (subCmd.equals("walinterval")) {
+                return new ArrayList<>(WAL_SUGGESTIONS);
             }
         }
         return List.of();

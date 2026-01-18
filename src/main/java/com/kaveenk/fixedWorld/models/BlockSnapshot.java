@@ -83,6 +83,18 @@ public class BlockSnapshot {
     }
 
     /**
+     * Checks if the current block state matches this snapshot's block data.
+     */
+    public boolean matchesCurrentBlock() {
+        try {
+            BlockData current = location.getBlock().getBlockData();
+            return current.matches(blockData);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
      * Gets the serialized tile entity data for database persistence.
      * Computed lazily and cached for efficiency.
      * 

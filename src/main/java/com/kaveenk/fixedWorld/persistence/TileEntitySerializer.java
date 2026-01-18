@@ -6,6 +6,8 @@ import com.google.gson.reflect.TypeToken;
 import org.bukkit.Bukkit;
 import org.bukkit.DyeColor;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
+import org.bukkit.Registry;
 import org.bukkit.block.Banner;
 import org.bukkit.block.Beacon;
 import org.bukkit.block.BlockState;
@@ -382,13 +384,16 @@ public class TileEntitySerializer {
         for (Pattern pattern : banner.getPatterns()) {
             Map<String, String> patternData = new HashMap<>();
             patternData.put("color", pattern.getColor().name());
-            patternData.put("pattern", pattern.getPattern().getIdentifier());
+            NamespacedKey key = pattern.getPattern().getKey();
+            if (key != null) {
+                patternData.put("pattern", key.toString());
+            }
             patterns.add(patternData);
         }
         data.put("patterns", patterns);
     }
 
-    @SuppressWarnings({"unchecked", "deprecation"})
+    @SuppressWarnings("unchecked")
     private static void deserializeBanner(Banner banner, Map<String, Object> data) {
         if (data.containsKey("baseColor")) {
             try {
@@ -403,7 +408,9 @@ public class TileEntitySerializer {
             for (Map<String, String> patternData : patternsList) {
                 try {
                     DyeColor color = DyeColor.valueOf(patternData.get("color"));
-                    PatternType type = PatternType.getByIdentifier(patternData.get("pattern"));
+                    String patternKey = patternData.get("pattern");
+                    NamespacedKey key = patternKey != null ? NamespacedKey.fromString(patternKey) : null;
+                    PatternType type = key != null ? Registry.BANNER_PATTERN.get(key) : null;
                     if (type != null) {
                         patterns.add(new Pattern(color, type));
                     }
@@ -435,21 +442,27 @@ public class TileEntitySerializer {
     @SuppressWarnings("deprecation")
     private static void serializeBeacon(Beacon beacon, Map<String, Object> data) {
         if (beacon.getPrimaryEffect() != null) {
-            data.put("primaryEffect", beacon.getPrimaryEffect().getType().getName());
+            NamespacedKey key = beacon.getPrimaryEffect().getType().getKey();
+            if (key != null) {
+                data.put("primaryEffect", key.toString());
+            }
         }
         if (beacon.getSecondaryEffect() != null) {
-            data.put("secondaryEffect", beacon.getSecondaryEffect().getType().getName());
+            NamespacedKey key = beacon.getSecondaryEffect().getType().getKey();
+            if (key != null) {
+                data.put("secondaryEffect", key.toString());
+            }
         }
     }
 
-    @SuppressWarnings("deprecation")
     private static void deserializeBeacon(Beacon beacon, Map<String, Object> data) {
         // Note: Beacon effects depend on pyramid structure, so we just try to set them
         // The actual effect may not apply if pyramid is not valid
         if (data.containsKey("primaryEffect")) {
             try {
-                String effectName = (String) data.get("primaryEffect");
-                PotionEffectType type = PotionEffectType.getByName(effectName);
+                String effectKey = (String) data.get("primaryEffect");
+                NamespacedKey key = effectKey != null ? NamespacedKey.fromString(effectKey) : null;
+                PotionEffectType type = key != null ? Registry.EFFECT.get(key) : null;
                 if (type != null) {
                     beacon.setPrimaryEffect(type);
                 }
@@ -457,8 +470,9 @@ public class TileEntitySerializer {
         }
         if (data.containsKey("secondaryEffect")) {
             try {
-                String effectName = (String) data.get("secondaryEffect");
-                PotionEffectType type = PotionEffectType.getByName(effectName);
+                String effectKey = (String) data.get("secondaryEffect");
+                NamespacedKey key = effectKey != null ? NamespacedKey.fromString(effectKey) : null;
+                PotionEffectType type = key != null ? Registry.EFFECT.get(key) : null;
                 if (type != null) {
                     beacon.setSecondaryEffect(type);
                 }

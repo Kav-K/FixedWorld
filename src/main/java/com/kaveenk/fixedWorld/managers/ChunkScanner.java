@@ -213,6 +213,31 @@ public class ChunkScanner implements Listener {
         }.runTaskTimer(plugin, 1, 1);  // Run every tick
     }
 
+    /**
+     * Rebuilds baselines for a world using the current live state.
+     * Used after startup recovery to prevent restoring back to stale damaged baselines.
+     */
+    public void rebuildWorldBaselines(World world) {
+        UUID worldId = world.getUID();
+        plugin.getLogger().info("[ChunkScanner] Rebuilding baselines for '" + world.getName() + "'...");
+
+        // Clear existing data for this world
+        chunkSignatures.remove(worldId);
+        snapshotCache.remove(worldId);
+        scanCursors.remove(worldId);
+        worldsBeingInitialized.remove(worldId);
+
+        // Clear detected changes for this world
+        String worldPrefix = worldId.toString() + ":";
+        detectedChanges.removeIf(key -> key.startsWith(worldPrefix));
+
+        // Clear pending deep scan tasks for this world
+        pendingScanTasks.removeIf(task -> task.worldId.equals(worldId));
+
+        // Re-capture baselines
+        onFixedWorldEnabled(world);
+    }
+
     public void onFixedWorldDisabled(World world) {
         UUID worldId = world.getUID();
         

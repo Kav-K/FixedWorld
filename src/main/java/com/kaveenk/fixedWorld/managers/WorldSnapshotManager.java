@@ -13,6 +13,8 @@ import org.bukkit.block.data.Bisected;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.type.Bed;
 
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -49,6 +51,11 @@ public class WorldSnapshotManager {
     // Tracks blocks captured via ChunkScanner baseline (without tile entity data)
     // These can be overridden by event-based captures which have full data
     private final Set<String> baselineOnlyCaptures = ConcurrentHashMap.newKeySet();
+
+    // Tracks worlds that are still restoring pending blocks after a restart
+    // We delay ChunkScanner baselines to avoid capturing damaged state.
+    private final Set<UUID> startupRecoveryWorlds = ConcurrentHashMap.newKeySet();
+    private org.bukkit.scheduler.BukkitRunnable startupRecoveryTask;
 
     // Cooldown duration in milliseconds after restoration (250ms)
     // This prevents restored blocks from immediately triggering new events
@@ -92,6 +99,13 @@ public class WorldSnapshotManager {
         restorationQueue.setBlocksPerTick(blocks);
     }
 
+    /**
+     * Configures how often the restoration queue processes (in ticks).
+     * Lower values = more frequent processing.
+     */
+    public void setBatchIntervalTicks(int ticks) {
+        restorationQueue.setTickInterval(ticks);
+    }
     /**
      * Sets the chunk scanner for ABSOLUTE mode.
      */
@@ -191,6 +205,7 @@ public class WorldSnapshotManager {
         long currentTime = System.currentTimeMillis();
         int restored = 0;
         int queued = 0;
+        Map<UUID, Integer> pendingByWorld = new HashMap<>();
 
         for (PersistenceManager.StoredRestoration sr : restorations) {
             World world = Bukkit.getWorld(sr.worldUuid);
@@ -214,6 +229,8 @@ public class WorldSnapshotManager {
                     baselineOnlyCaptures.add(locationKey);
                 }
 
+                pendingByWorld.merge(sr.worldUuid, 1, Integer::sum);
+
                 // Check if restoration time has passed
                 if (sr.restoreAtMs <= currentTime) {
                     // Restore immediately (but through the queue for batching)
@@ -234,16 +251,63 @@ public class WorldSnapshotManager {
                 restored + " due now, " + queued + " scheduled)");
         }
 
+        // Mark worlds that are still recovering so we can rebuild baselines later
+        if (!pendingByWorld.isEmpty()) {
+            startupRecoveryWorlds.addAll(pendingByWorld.keySet());
+            startStartupRecoveryMonitor();
+        }
+
         // Start chunk scanner if absolute mode was enabled
         if (absoluteModeEnabled && chunkScanner != null) {
             for (UUID worldId : fixedWorlds.keySet()) {
                 World world = Bukkit.getWorld(worldId);
                 if (world != null) {
-                    chunkScanner.onFixedWorldEnabled(world);
+                    // If this world has pending restorations, delay baseline capture
+                    if (!startupRecoveryWorlds.contains(worldId)) {
+                        chunkScanner.onFixedWorldEnabled(world);
+                    } else {
+                        plugin.getLogger().info("[ChunkScanner] Delaying baselines for '" + world.getName() +
+                            "' until startup recovery completes");
+                    }
                 }
             }
             plugin.getLogger().info("Absolute mode restored - ChunkScanner active");
         }
+    }
+
+    /**
+     * Monitors pending restorations after a restart. Once a world has fully
+     * recovered, we rebuild ChunkScanner baselines to avoid restoring to stale
+     * damaged baselines.
+     */
+    private void startStartupRecoveryMonitor() {
+        if (startupRecoveryTask != null) {
+            return;
+        }
+        startupRecoveryTask = new org.bukkit.scheduler.BukkitRunnable() {
+            @Override
+            public void run() {
+                if (startupRecoveryWorlds.isEmpty()) {
+                    cancel();
+                    startupRecoveryTask = null;
+                    return;
+                }
+
+                for (UUID worldId : new HashSet<>(startupRecoveryWorlds)) {
+                    World world = Bukkit.getWorld(worldId);
+                    if (world == null) continue;
+
+                    String worldPrefix = worldId.toString() + ":";
+                    if (restorationQueue.getPendingCount(worldPrefix) == 0) {
+                        startupRecoveryWorlds.remove(worldId);
+                        if (absoluteModeEnabled && chunkScanner != null) {
+                            chunkScanner.rebuildWorldBaselines(world);
+                        }
+                    }
+                }
+            }
+        };
+        startupRecoveryTask.runTaskTimer(plugin, 20L, 20L);
     }
 
     /**
@@ -779,5 +843,31 @@ public class WorldSnapshotManager {
             return "Persistence disabled";
         }
         return persistenceManager.getStats();
+    }
+
+    public void setPersistenceFlushIntervalTicks(int ticks) {
+        if (persistenceManager != null) {
+            persistenceManager.setFlushAllIntervalTicks(ticks);
+        }
+    }
+
+    public int getPersistenceFlushIntervalTicks() {
+        if (persistenceManager == null) {
+            return -1;
+        }
+        return persistenceManager.getFlushAllIntervalTicks();
+    }
+
+    public void setWalIntervalTicks(int ticks) {
+        if (persistenceManager != null) {
+            persistenceManager.setWalIntervalTicks(ticks);
+        }
+    }
+
+    public int getWalIntervalTicks() {
+        if (persistenceManager == null) {
+            return -1;
+        }
+        return persistenceManager.getWalIntervalTicks();
     }
 }

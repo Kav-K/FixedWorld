@@ -37,6 +37,10 @@ public class RestorationQueue {
     // Configuration
     private int blocksPerTick = 50;  // Process up to 50 blocks per tick
     private int tickInterval = 1;    // Run every tick
+    private static final long RETRY_BASE_DELAY_MS = 2000L;
+    private static final long RETRY_MAX_DELAY_MS = 30000L;
+    private static final long VERIFY_LOG_COOLDOWN_MS = 10000L;
+    private final Map<String, Long> lastVerifyLog = new ConcurrentHashMap<>();
     
     // Callback for when a block is restored
     private Consumer<String> onRestorationComplete;
@@ -77,6 +81,22 @@ public class RestorationQueue {
     }
 
     /**
+     * Configures how often the processing task runs (in ticks).
+     * Lower values = more frequent processing.
+     */
+    public void setTickInterval(int ticks) {
+        int newInterval = Math.max(1, ticks);
+        if (this.tickInterval == newInterval) {
+            return;
+        }
+        this.tickInterval = newInterval;
+        // Restart processing to apply the new interval if currently running
+        if (isRunning.get()) {
+            stopProcessing();
+            ensureProcessing();
+        }
+    }
+    /**
      * Queues a block for restoration at a specific time.
      * If the block is already queued, updates the restoration time.
      *
@@ -85,6 +105,10 @@ public class RestorationQueue {
      * @param restoreTimeMs When to restore (System.currentTimeMillis())
      */
     public void queueRestoration(String locationKey, BlockSnapshot snapshot, long restoreTimeMs) {
+        queueRestoration(locationKey, snapshot, restoreTimeMs, 0);
+    }
+
+    private void queueRestoration(String locationKey, BlockSnapshot snapshot, long restoreTimeMs, int retryCount) {
         // Check if already queued
         PendingRestoration existing = pendingByLocation.get(locationKey);
         if (existing != null) {
@@ -92,7 +116,7 @@ public class RestorationQueue {
             queue.remove(existing);
         }
 
-        PendingRestoration pending = new PendingRestoration(locationKey, snapshot, restoreTimeMs);
+        PendingRestoration pending = new PendingRestoration(locationKey, snapshot, restoreTimeMs, retryCount);
         pendingByLocation.put(locationKey, pending);
         queue.offer(pending);
         totalQueued.incrementAndGet();
@@ -177,8 +201,25 @@ public class RestorationQueue {
             try {
                 BlockSnapshot snapshot = pending.getSnapshot();
                 snapshot.restore();
+
+                // Verify that the block actually matches after restore
+                if (!snapshot.matchesCurrentBlock()) {
+                    long retryDelay = Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * (pending.getRetryCount() + 1));
+                    long retryAt = System.currentTimeMillis() + retryDelay;
+                    queueRestoration(pending.getLocationKey(), snapshot, retryAt, pending.getRetryCount() + 1);
+                    long now = System.currentTimeMillis();
+                    Long lastLog = lastVerifyLog.get(pending.getLocationKey());
+                    if (lastLog == null || now - lastLog >= VERIFY_LOG_COOLDOWN_MS) {
+                        lastVerifyLog.put(pending.getLocationKey(), now);
+                        plugin.getLogger().warning("Restore verification failed at " + pending.getLocationKey() +
+                            " (retry " + (pending.getRetryCount() + 1) + ", retrying in " + (retryDelay / 1000.0) + "s)");
+                    }
+                    continue;
+                }
+
                 totalRestored.incrementAndGet();
-                
+                lastVerifyLog.remove(pending.getLocationKey());
+
                 // Delete from database (async)
                 if (persistenceManager != null && snapshot.getLocation() != null) {
                     persistenceManager.queueDelete(
@@ -313,11 +354,13 @@ public class RestorationQueue {
         private final String locationKey;
         private final BlockSnapshot snapshot;
         private final long restoreTime;
+        private final int retryCount;
 
-        public PendingRestoration(String locationKey, BlockSnapshot snapshot, long restoreTime) {
+        public PendingRestoration(String locationKey, BlockSnapshot snapshot, long restoreTime, int retryCount) {
             this.locationKey = locationKey;
             this.snapshot = snapshot;
             this.restoreTime = restoreTime;
+            this.retryCount = retryCount;
         }
 
         public String getLocationKey() {
@@ -330,6 +373,10 @@ public class RestorationQueue {
 
         public long getRestoreTime() {
             return restoreTime;
+        }
+
+        public int getRetryCount() {
+            return retryCount;
         }
     }
 }
