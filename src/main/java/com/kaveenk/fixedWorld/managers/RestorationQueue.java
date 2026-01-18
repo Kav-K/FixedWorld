@@ -2,6 +2,7 @@ package com.kaveenk.fixedWorld.managers;
 
 import com.kaveenk.fixedWorld.FixedWorld;
 import com.kaveenk.fixedWorld.models.BlockSnapshot;
+import com.kaveenk.fixedWorld.persistence.PersistenceManager;
 import org.bukkit.scheduler.BukkitRunnable;
 
 import java.util.Comparator;
@@ -17,7 +18,7 @@ import java.util.function.Consumer;
  * Uses a priority queue sorted by restoration time and processes
  * a configurable number of blocks per tick.
  * 
- * Designed to be async-ready for future database persistence.
+ * Integrates with PersistenceManager for restart-persistence.
  */
 public class RestorationQueue {
 
@@ -40,6 +41,9 @@ public class RestorationQueue {
     // Callback for when a block is restored
     private Consumer<String> onRestorationComplete;
     
+    // Persistence manager (optional - may be null if persistence disabled)
+    private PersistenceManager persistenceManager;
+    
     // Statistics
     private final AtomicInteger totalRestored = new AtomicInteger(0);
     private final AtomicInteger totalQueued = new AtomicInteger(0);
@@ -49,6 +53,13 @@ public class RestorationQueue {
         this.queue = new PriorityBlockingQueue<>(1000, 
             Comparator.comparingLong(PendingRestoration::getRestoreTime));
         this.pendingByLocation = new ConcurrentHashMap<>();
+    }
+    
+    /**
+     * Sets the persistence manager for database integration.
+     */
+    public void setPersistenceManager(PersistenceManager manager) {
+        this.persistenceManager = manager;
     }
 
     /**
@@ -85,6 +96,20 @@ public class RestorationQueue {
         pendingByLocation.put(locationKey, pending);
         queue.offer(pending);
         totalQueued.incrementAndGet();
+
+        // Persist to database (async)
+        if (persistenceManager != null && snapshot.getLocation() != null) {
+            persistenceManager.queueWrite(
+                snapshot.getLocation().getWorld().getUID(),
+                snapshot.getLocation().getBlockX(),
+                snapshot.getLocation().getBlockY(),
+                snapshot.getLocation().getBlockZ(),
+                snapshot.getBlockData(),
+                snapshot.hasTileEntity(),
+                snapshot.getSerializedTileEntity(),  // Full NBT serialization for tile entities
+                restoreTimeMs
+            );
+        }
 
         // Start processing if not running
         ensureProcessing();
@@ -150,8 +175,19 @@ public class RestorationQueue {
 
             // Restore the block (must be on main thread)
             try {
-                pending.getSnapshot().restore();
+                BlockSnapshot snapshot = pending.getSnapshot();
+                snapshot.restore();
                 totalRestored.incrementAndGet();
+                
+                // Delete from database (async)
+                if (persistenceManager != null && snapshot.getLocation() != null) {
+                    persistenceManager.queueDelete(
+                        snapshot.getLocation().getWorld().getUID(),
+                        snapshot.getLocation().getBlockX(),
+                        snapshot.getLocation().getBlockY(),
+                        snapshot.getLocation().getBlockZ()
+                    );
+                }
                 
                 // Notify callback
                 if (onRestorationComplete != null) {

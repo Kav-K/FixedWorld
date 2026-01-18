@@ -163,6 +163,10 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
                 player.sendMessage(ChatColor.GRAY + "Cache misses: " + ChatColor.WHITE + scanner.getTotalSnapshotCacheMisses());
             }
         }
+        
+        // Show persistence stats
+        player.sendMessage(ChatColor.AQUA + "--- Database Persistence ---");
+        player.sendMessage(ChatColor.GRAY + snapshotManager.getPersistenceStats());
     }
 
     private void handleAbsolute(Player player, String[] args) {

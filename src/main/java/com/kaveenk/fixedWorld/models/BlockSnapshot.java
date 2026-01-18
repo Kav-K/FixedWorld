@@ -1,5 +1,6 @@
 package com.kaveenk.fixedWorld.models;
 
+import com.kaveenk.fixedWorld.persistence.TileEntitySerializer;
 import com.kaveenk.fixedWorld.utils.BlockUtils;
 import org.bukkit.Location;
 import org.bukkit.block.Block;
@@ -10,6 +11,7 @@ import org.bukkit.block.data.type.Leaves;
 
 /**
  * Immutable snapshot of a block's state at a point in time.
+ * Supports both in-memory tile entity references and serialized NBT data for persistence.
  */
 public class BlockSnapshot {
 
@@ -17,6 +19,11 @@ public class BlockSnapshot {
     private final BlockData blockData;
     private final BlockState blockState;
     private final boolean hasTileEntity;
+    
+    // Serialized tile entity data for database persistence
+    // Lazy-computed when needed, cached after first access
+    private byte[] serializedTileEntity;
+    private boolean serializedComputed = false;
 
     public BlockSnapshot(Block block) {
         this.location = block.getLocation().clone();
@@ -46,8 +53,54 @@ public class BlockSnapshot {
         this.hasTileEntity = false;
     }
 
+    /**
+     * Create a snapshot from database-persisted data.
+     * Used when loading pending restorations after server restart.
+     *
+     * @param location The block location
+     * @param blockData The BlockData to restore
+     * @param serializedTileEntity Serialized tile entity data (may be null)
+     */
+    public BlockSnapshot(Location location, BlockData blockData, byte[] serializedTileEntity) {
+        this.location = location.clone();
+        this.blockData = blockData.clone();
+        this.blockState = null;  // Will use serialized data instead
+        this.hasTileEntity = serializedTileEntity != null && serializedTileEntity.length > 0;
+        this.serializedTileEntity = serializedTileEntity;
+        this.serializedComputed = true;  // Already have the serialized data
+    }
+
     public Location getLocation() {
         return location.clone();
+    }
+
+    public BlockData getBlockData() {
+        return blockData.clone();
+    }
+
+    public boolean hasTileEntity() {
+        return hasTileEntity;
+    }
+
+    /**
+     * Gets the serialized tile entity data for database persistence.
+     * Computed lazily and cached for efficiency.
+     * 
+     * @return Serialized tile entity data as bytes (JSON), or null if no tile entity
+     */
+    public byte[] getSerializedTileEntity() {
+        if (serializedComputed) {
+            return serializedTileEntity;
+        }
+        
+        // Compute serialization
+        if (blockState instanceof TileState) {
+            serializedTileEntity = TileEntitySerializer.serialize(blockState);
+        } else {
+            serializedTileEntity = null;
+        }
+        serializedComputed = true;
+        return serializedTileEntity;
     }
 
     /**
@@ -69,10 +122,19 @@ public class BlockSnapshot {
             }
         }
 
+        // Set the block data first
         block.setBlockData(dataToApply, false);
 
+        // Restore tile entity data
         if (hasTileEntity) {
-            blockState.update(true, false);
+            if (blockState != null) {
+                // We have a live BlockState reference - use it directly
+                blockState.update(true, false);
+            } else if (serializedTileEntity != null && serializedTileEntity.length > 0) {
+                // We have serialized tile entity data from database - deserialize and apply
+                BlockState freshState = block.getState();
+                TileEntitySerializer.deserialize(freshState, serializedTileEntity);
+            }
         }
     }
 

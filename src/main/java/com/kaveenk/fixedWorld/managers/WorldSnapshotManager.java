@@ -2,6 +2,8 @@ package com.kaveenk.fixedWorld.managers;
 
 import com.kaveenk.fixedWorld.FixedWorld;
 import com.kaveenk.fixedWorld.models.BlockSnapshot;
+import com.kaveenk.fixedWorld.persistence.PersistenceManager;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -11,6 +13,7 @@ import org.bukkit.block.data.Bisected;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.type.Bed;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -63,12 +66,17 @@ public class WorldSnapshotManager {
     // Whether absolute mode is enabled (ChunkScanner active)
     private boolean absoluteModeEnabled = false;
 
-    public WorldSnapshotManager(FixedWorld plugin) {
+    // Persistence manager (may be null if persistence failed to initialize)
+    private final PersistenceManager persistenceManager;
+
+    public WorldSnapshotManager(FixedWorld plugin, PersistenceManager persistenceManager) {
         this.plugin = plugin;
+        this.persistenceManager = persistenceManager;
 
         // Initialize the batched restoration queue
         this.restorationQueue = new RestorationQueue(plugin);
         this.restorationQueue.setOnRestorationComplete(this::onBlockRestored);
+        this.restorationQueue.setPersistenceManager(persistenceManager);
 
         // Schedule periodic cleanup of expired cooldowns to prevent memory buildup
         // Runs every 5 minutes (6000 ticks)
@@ -134,6 +142,108 @@ public class WorldSnapshotManager {
                 plugin.getLogger().info("Absolute mode DISABLED - ChunkScanner inactive");
             }
         }
+
+        // Update persistence for all fixed worlds with the new absolute mode setting
+        if (persistenceManager != null) {
+            for (Map.Entry<UUID, Long> entry : fixedWorlds.entrySet()) {
+                World world = plugin.getServer().getWorld(entry.getKey());
+                if (world != null) {
+                    int seconds = (int) (entry.getValue() / 20L);
+                    persistenceManager.saveFixedWorld(world.getUID(), world.getName(), seconds, absoluteModeEnabled);
+                }
+            }
+        }
+    }
+
+    /**
+     * Loads saved fixed world settings and pending restorations from the database.
+     * Called during plugin startup to restore state after a server restart.
+     */
+    public void loadFromPersistence() {
+        if (persistenceManager == null) {
+            plugin.getLogger().info("Persistence disabled - skipping state restoration");
+            return;
+        }
+
+        // Load fixed world settings
+        List<PersistenceManager.FixedWorldSettings> settings = persistenceManager.loadFixedWorldSettings();
+        for (PersistenceManager.FixedWorldSettings setting : settings) {
+            World world = Bukkit.getWorld(setting.worldUuid);
+            if (world != null) {
+                long ticks = setting.delaySeconds * 20L;
+                fixedWorlds.put(setting.worldUuid, ticks);
+                
+                if (setting.absoluteMode) {
+                    absoluteModeEnabled = true;
+                }
+                
+                plugin.getLogger().info("Restored fixed world: " + setting.worldName + 
+                    " (" + setting.delaySeconds + "s delay" + 
+                    (setting.absoluteMode ? ", absolute mode" : "") + ")");
+            } else {
+                plugin.getLogger().warning("Could not find world " + setting.worldName + 
+                    " (UUID: " + setting.worldUuid + ") - skipping");
+            }
+        }
+
+        // Load pending restorations
+        List<PersistenceManager.StoredRestoration> restorations = persistenceManager.loadPendingRestorations();
+        long currentTime = System.currentTimeMillis();
+        int restored = 0;
+        int queued = 0;
+
+        for (PersistenceManager.StoredRestoration sr : restorations) {
+            World world = Bukkit.getWorld(sr.worldUuid);
+            if (world == null) continue;
+
+            try {
+                // Parse the stored block data
+                BlockData blockData = Bukkit.createBlockData(sr.blockDataString);
+                Location location = new Location(world, sr.x, sr.y, sr.z);
+                
+                // Create a snapshot from the stored data, including tile entity NBT if present
+                BlockSnapshot snapshot = new BlockSnapshot(location, blockData, sr.tileEntityNbt);
+                String locationKey = sr.worldUuid.toString() + ":" + sr.x + ":" + sr.y + ":" + sr.z;
+
+                // Store in memory
+                originalSnapshots.put(locationKey, snapshot);
+                
+                // Only mark as baselineOnly if we don't have tile entity data
+                // Snapshots with full tile entity data should not be overridden
+                if (!sr.hasTileEntity || sr.tileEntityNbt == null) {
+                    baselineOnlyCaptures.add(locationKey);
+                }
+
+                // Check if restoration time has passed
+                if (sr.restoreAtMs <= currentTime) {
+                    // Restore immediately (but through the queue for batching)
+                    restorationQueue.queueRestoration(locationKey, snapshot, currentTime);
+                    restored++;
+                } else {
+                    // Schedule for later
+                    restorationQueue.queueRestoration(locationKey, snapshot, sr.restoreAtMs);
+                    queued++;
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("Failed to restore block data: " + e.getMessage());
+            }
+        }
+
+        if (restored > 0 || queued > 0) {
+            plugin.getLogger().info("Loaded " + (restored + queued) + " pending restorations (" + 
+                restored + " due now, " + queued + " scheduled)");
+        }
+
+        // Start chunk scanner if absolute mode was enabled
+        if (absoluteModeEnabled && chunkScanner != null) {
+            for (UUID worldId : fixedWorlds.keySet()) {
+                World world = Bukkit.getWorld(worldId);
+                if (world != null) {
+                    chunkScanner.onFixedWorldEnabled(world);
+                }
+            }
+            plugin.getLogger().info("Absolute mode restored - ChunkScanner active");
+        }
     }
 
     /**
@@ -156,6 +266,11 @@ public class WorldSnapshotManager {
         fixedWorlds.put(world.getUID(), ticks);
         plugin.getLogger().info("Enabled fixed world for '" + world.getName() + "' with " + seconds + "s restore delay");
 
+        // Persist to database
+        if (persistenceManager != null) {
+            persistenceManager.saveFixedWorld(world.getUID(), world.getName(), seconds, absoluteModeEnabled);
+        }
+
         // Notify chunk scanner to capture baselines (only if absolute mode is enabled)
         if (absoluteModeEnabled && chunkScanner != null) {
             chunkScanner.onFixedWorldEnabled(world);
@@ -177,6 +292,12 @@ public class WorldSnapshotManager {
         fireSuppressionZones.keySet().removeIf(key -> key.startsWith(worldPrefix));
         baselineOnlyCaptures.removeIf(key -> key.startsWith(worldPrefix));
         plugin.getLogger().info("Disabled fixed world for '" + world.getName() + "'");
+
+        // Remove from persistence
+        if (persistenceManager != null) {
+            persistenceManager.removeFixedWorld(world.getUID());
+            persistenceManager.clearWorld(world.getUID());
+        }
 
         // Notify chunk scanner to clear baselines
         if (chunkScanner != null) {
@@ -648,5 +769,15 @@ public class WorldSnapshotManager {
      */
     public int getFireSuppressionZoneCount() {
         return fireSuppressionZones.size();
+    }
+
+    /**
+     * Gets the persistence manager stats.
+     */
+    public String getPersistenceStats() {
+        if (persistenceManager == null) {
+            return "Persistence disabled";
+        }
+        return persistenceManager.getStats();
     }
 }
