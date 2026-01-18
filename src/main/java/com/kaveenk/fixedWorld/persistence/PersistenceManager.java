@@ -119,7 +119,6 @@ public class PersistenceManager {
         if (remaining <= 0) {
             return;
         }
-        plugin.getLogger().info("[Persistence] Flushing " + remaining + " pending writes...");
         // Drain fully to avoid MAX_BATCH_SIZE leaving data behind on shutdown
         while (!writeQueue.isEmpty() || !deleteQueue.isEmpty()) {
             if (!database.isConnected()) {
@@ -195,7 +194,6 @@ public class PersistenceManager {
             }
         };
         flushAllTask.runTaskTimerAsynchronously(plugin, flushAllIntervalTicks, flushAllIntervalTicks);
-        plugin.getLogger().info("[Persistence] Started full flush task (every " + (flushAllIntervalTicks / 20) + "s)");
     }
 
     private void startWalWriteTask() {

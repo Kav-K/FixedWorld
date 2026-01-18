@@ -1,6 +1,5 @@
 package com.kaveenk.fixedWorld.commands;
 
-import com.kaveenk.fixedWorld.managers.ChunkScanner;
 import com.kaveenk.fixedWorld.managers.WorldSnapshotManager;
 import org.bukkit.ChatColor;
 import org.bukkit.World;
@@ -115,72 +114,29 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
         int delay = snapshotManager.getRestoreDelaySeconds(world);
         int pending = snapshotManager.getPendingCount(world);
         boolean absoluteMode = snapshotManager.isAbsoluteModeEnabled();
-        
-        player.sendMessage(ChatColor.GREEN + "=== Fixed World Status: '" + world.getName() + "' ===");
-        player.sendMessage(ChatColor.GRAY + "Restore delay: " + ChatColor.WHITE + delay + "s");
-        player.sendMessage(ChatColor.AQUA + "--- Restoration Queue ---");
-        player.sendMessage(ChatColor.GRAY + "This world: " + ChatColor.WHITE + pending + " blocks");
-        player.sendMessage(ChatColor.GRAY + "Global: " + ChatColor.WHITE + snapshotManager.getDetailedQueueStats());
-        player.sendMessage(ChatColor.GRAY + "Absolute mode: " + 
-                          (absoluteMode ? ChatColor.GREEN + "ON" : ChatColor.RED + "OFF"));
-        
-        // Show memory usage from snapshot manager
-        player.sendMessage(ChatColor.AQUA + "--- Memory Usage ---");
-        player.sendMessage(ChatColor.GRAY + "Block snapshots: " + ChatColor.WHITE + 
-                          String.format("%.2f MB", snapshotManager.getSnapshotsMemoryMB()));
-        
-        if (absoluteMode) {
-            ChunkScanner scanner = snapshotManager.getChunkScanner();
-            if (scanner != null) {
-                int chunks = scanner.getBaselineChunkCount(world);
-                int totalChunks = scanner.getTotalBaselineChunkCount();
-                int cached = scanner.getCachedSnapshotCount(world);
-                int totalCached = scanner.getTotalCachedSnapshotCount();
-                int pendingScans = scanner.getPendingScanCount();
-                int activeChunks = scanner.getActiveChunksCount();
-                
-                player.sendMessage(ChatColor.AQUA + "--- ChunkScanner (this world) ---");
-                player.sendMessage(ChatColor.GRAY + "Tracked chunks: " + ChatColor.WHITE + chunks);
-                player.sendMessage(ChatColor.GRAY + "Cached snapshots: " + ChatColor.WHITE + cached + 
-                                  ChatColor.DARK_GRAY + " (" + (chunks > 0 ? (cached * 100 / chunks) : 0) + "% cache hit)");
-                player.sendMessage(ChatColor.GRAY + "Active chunks: " + ChatColor.WHITE + activeChunks);
-                player.sendMessage(ChatColor.GRAY + "Pending deep scans: " + ChatColor.WHITE + pendingScans);
-                
-                player.sendMessage(ChatColor.AQUA + "--- ChunkScanner Memory ---");
-                player.sendMessage(ChatColor.GRAY + "Signatures: " + ChatColor.WHITE + 
-                                  String.format("%.2f MB", scanner.getSignaturesMemoryMB()) + 
-                                  ChatColor.DARK_GRAY + " (" + totalChunks + " chunks)");
-                player.sendMessage(ChatColor.GRAY + "Snapshot cache: " + ChatColor.WHITE + 
-                                  String.format("%.2f MB", scanner.getSnapshotCacheMemoryMB()) +
-                                  ChatColor.DARK_GRAY + " (" + totalCached + " snapshots)");
-                player.sendMessage(ChatColor.GRAY + "Change tracking: " + ChatColor.WHITE + 
-                                  String.format("%.2f MB", scanner.getDetectedChangesMemoryMB()) +
-                                  ChatColor.DARK_GRAY + " (" + scanner.getDetectedChangesCount() + " entries)");
-                player.sendMessage(ChatColor.GOLD + "Total scanner: " + ChatColor.WHITE + 
-                                  String.format("%.2f MB", scanner.getTotalMemoryMB()));
-                
-                player.sendMessage(ChatColor.AQUA + "--- ChunkScanner Stats ---");
-                player.sendMessage(ChatColor.GRAY + "Signature scans: " + ChatColor.WHITE + scanner.getTotalSignatureScans());
-                player.sendMessage(ChatColor.GRAY + "Deep scans: " + ChatColor.WHITE + scanner.getTotalDeepScans());
-                player.sendMessage(ChatColor.GRAY + "Full verifications: " + ChatColor.WHITE + scanner.getTotalFullVerifications() +
-                                  ChatColor.DARK_GRAY + " (" + scanner.getTotalAsyncVerifications() + " async completed)");
-                player.sendMessage(ChatColor.GRAY + "Async in progress: " + ChatColor.WHITE + scanner.getAsyncVerificationsInProgress());
-                player.sendMessage(ChatColor.GRAY + "Changes detected: " + ChatColor.WHITE + scanner.getTotalChangesDetected());
-                player.sendMessage(ChatColor.GRAY + "Cache misses: " + ChatColor.WHITE + scanner.getTotalSnapshotCacheMisses());
-            }
-        }
-        
-        // Show persistence stats
-        player.sendMessage(ChatColor.AQUA + "--- Database Persistence ---");
-        player.sendMessage(ChatColor.GRAY + snapshotManager.getPersistenceStats());
+        int batchSize = snapshotManager.getBlocksPerTick();
+        int batchInterval = snapshotManager.getBatchIntervalTicks();
         int flushInterval = snapshotManager.getPersistenceFlushIntervalTicks();
+        int walInterval = snapshotManager.getWalIntervalTicks();
+
+        player.sendMessage(ChatColor.GREEN + "=== FixedWorld Status ===");
+        player.sendMessage(ChatColor.GRAY + "World: " + ChatColor.WHITE + world.getName());
+        player.sendMessage(ChatColor.GRAY + "Restore delay: " + ChatColor.WHITE + delay + "s");
+        player.sendMessage(ChatColor.GRAY + "Absolute mode: " + (absoluteMode ? ChatColor.GREEN + "ON" : ChatColor.RED + "OFF"));
+
+        player.sendMessage(ChatColor.AQUA + "--- Restore Performance ---");
+        player.sendMessage(ChatColor.GRAY + "Pending restores: " + ChatColor.WHITE + pending + " blocks");
+        player.sendMessage(ChatColor.GRAY + "Batch size: " + ChatColor.WHITE + batchSize + " blocks/tick");
+        player.sendMessage(ChatColor.GRAY + "Batch interval: " + ChatColor.WHITE + batchInterval + " ticks (" +
+                          String.format("%.2f", batchInterval / 20.0) + "s)");
+
+        player.sendMessage(ChatColor.AQUA + "--- Crash Resilience ---");
         if (flushInterval > 0) {
-            player.sendMessage(ChatColor.GRAY + "Full flush interval: " + ChatColor.WHITE +
+            player.sendMessage(ChatColor.GRAY + "Full DB flush: " + ChatColor.WHITE +
                 flushInterval + " ticks (" + String.format("%.2f", flushInterval / 20.0) + "s)");
         }
-        int walInterval = snapshotManager.getWalIntervalTicks();
         if (walInterval > 0) {
-            player.sendMessage(ChatColor.GRAY + "WAL interval: " + ChatColor.WHITE +
+            player.sendMessage(ChatColor.GRAY + "WAL append: " + ChatColor.WHITE +
                 walInterval + " ticks (" + String.format("%.2f", walInterval / 20.0) + "s)");
         }
     }
@@ -322,15 +278,24 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
     }
 
     private void sendUsage(Player player) {
-        player.sendMessage(ChatColor.GOLD + "=== FixedWorld Commands ===");
-        player.sendMessage(ChatColor.YELLOW + "/fixedworld fix <seconds>" + ChatColor.GRAY + " - Enable fixed world");
-        player.sendMessage(ChatColor.YELLOW + "/fixedworld unfix" + ChatColor.GRAY + " - Disable fixed world");
-        player.sendMessage(ChatColor.YELLOW + "/fixedworld status" + ChatColor.GRAY + " - Show status");
-        player.sendMessage(ChatColor.YELLOW + "/fixedworld absolute <on|off>" + ChatColor.GRAY + " - Toggle absolute mode");
-        player.sendMessage(ChatColor.YELLOW + "/fixedworld batchsize <n>" + ChatColor.GRAY + " - Set blocks per tick");
-        player.sendMessage(ChatColor.YELLOW + "/fixedworld batchinterval <ticks>" + ChatColor.GRAY + " - Set batch interval");
-        player.sendMessage(ChatColor.YELLOW + "/fixedworld flushinterval <ticks>" + ChatColor.GRAY + " - Set DB flush interval");
-        player.sendMessage(ChatColor.YELLOW + "/fixedworld walinterval <ticks>" + ChatColor.GRAY + " - Set WAL interval");
+        player.sendMessage(ChatColor.GOLD + "=== FixedWorld Help ===");
+        player.sendMessage(ChatColor.YELLOW + "/fixedworld fix <seconds>" + ChatColor.GRAY +
+            " - Enable FixedWorld in this world. Blocks revert after the given delay.");
+        player.sendMessage(ChatColor.YELLOW + "/fixedworld unfix" + ChatColor.GRAY +
+            " - Disable FixedWorld in this world.");
+        player.sendMessage(ChatColor.YELLOW + "/fixedworld status" + ChatColor.GRAY +
+            " - Show current world settings and recovery performance.");
+        player.sendMessage(ChatColor.YELLOW + "/fixedworld absolute <on|off>" + ChatColor.GRAY +
+            " - A best-effort scan for changes made by /fill, /setblock, or other plugins.");
+        player.sendMessage(ChatColor.YELLOW + "/fixedworld batchsize <n>" + ChatColor.GRAY +
+            " - How many blocks to restore per tick. Higher = faster but more lag.");
+        player.sendMessage(ChatColor.YELLOW + "/fixedworld batchinterval <ticks>" + ChatColor.GRAY +
+            " - How often restores run. Lower = smoother recovery, higher = less CPU.");
+        player.sendMessage(ChatColor.YELLOW + "/fixedworld flushinterval <ticks>" + ChatColor.GRAY +
+            " - How often we force a full DB flush. This is how often we save plugin data to the database, plugin data includes pending block restorations and etc. Lower = safer on crashes, more disk IO.");
+        player.sendMessage(ChatColor.YELLOW + "/fixedworld walinterval <ticks>" + ChatColor.GRAY +
+            " - How frequently to write to the log of blocks changed in the world, in ticks. " +
+            "Writing more frequently (lower value) will make server performance slower.");
     }
 
     @Override

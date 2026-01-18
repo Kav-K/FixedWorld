@@ -99,12 +99,20 @@ public class WorldSnapshotManager {
         restorationQueue.setBlocksPerTick(blocks);
     }
 
+    public int getBlocksPerTick() {
+        return restorationQueue.getBlocksPerTick();
+    }
+
     /**
      * Configures how often the restoration queue processes (in ticks).
      * Lower values = more frequent processing.
      */
     public void setBatchIntervalTicks(int ticks) {
         restorationQueue.setTickInterval(ticks);
+    }
+
+    public int getBatchIntervalTicks() {
+        return restorationQueue.getTickInterval();
     }
     /**
      * Sets the chunk scanner for ABSOLUTE mode.

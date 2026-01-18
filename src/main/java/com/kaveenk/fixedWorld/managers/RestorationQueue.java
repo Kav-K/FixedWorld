@@ -80,6 +80,10 @@ public class RestorationQueue {
         this.blocksPerTick = Math.max(1, blocks);
     }
 
+    public int getBlocksPerTick() {
+        return blocksPerTick;
+    }
+
     /**
      * Configures how often the processing task runs (in ticks).
      * Lower values = more frequent processing.
@@ -95,6 +99,10 @@ public class RestorationQueue {
             stopProcessing();
             ensureProcessing();
         }
+    }
+
+    public int getTickInterval() {
+        return tickInterval;
     }
     /**
      * Queues a block for restoration at a specific time.
@@ -211,8 +219,6 @@ public class RestorationQueue {
                     Long lastLog = lastVerifyLog.get(pending.getLocationKey());
                     if (lastLog == null || now - lastLog >= VERIFY_LOG_COOLDOWN_MS) {
                         lastVerifyLog.put(pending.getLocationKey(), now);
-                        plugin.getLogger().warning("Restore verification failed at " + pending.getLocationKey() +
-                            " (retry " + (pending.getRetryCount() + 1) + ", retrying in " + (retryDelay / 1000.0) + "s)");
                     }
                     continue;
                 }
