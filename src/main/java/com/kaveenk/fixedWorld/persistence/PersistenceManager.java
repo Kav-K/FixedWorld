@@ -8,7 +8,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -177,6 +179,47 @@ public class PersistenceManager {
 
     public int getWalIntervalTicks() {
         return walIntervalTicks;
+    }
+
+    /**
+     * Saves a global plugin setting to the database.
+     */
+    public void savePluginSetting(String key, int value) {
+        if (!database.isConnected()) return;
+
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+            try (PreparedStatement stmt = database.prepareStatement(
+                    "INSERT OR REPLACE INTO plugin_settings (setting_key, setting_value) VALUES (?, ?)")) {
+                stmt.setString(1, key);
+                stmt.setString(2, Integer.toString(value));
+                stmt.executeUpdate();
+            } catch (SQLException e) {
+                plugin.getLogger().log(Level.WARNING, "[Persistence] Failed to save plugin setting", e);
+            }
+        });
+    }
+
+    /**
+     * Loads all global plugin settings from the database.
+     */
+    public Map<String, Integer> loadPluginSettings() {
+        Map<String, Integer> settings = new HashMap<>();
+        if (!database.isConnected()) return settings;
+
+        try (PreparedStatement stmt = database.prepareStatement(
+                "SELECT setting_key, setting_value FROM plugin_settings")) {
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                try {
+                    String key = rs.getString("setting_key");
+                    int value = Integer.parseInt(rs.getString("setting_value"));
+                    settings.put(key, value);
+                } catch (Exception ignored) {}
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().log(Level.WARNING, "[Persistence] Failed to load plugin settings", e);
+        }
+        return settings;
     }
 
     private void startFlushAllTask() {

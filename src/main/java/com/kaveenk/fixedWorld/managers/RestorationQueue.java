@@ -322,6 +322,22 @@ public class RestorationQueue {
         }
         return count;
     }
+
+    /**
+     * Gets the estimated time until the next restore batch is due.
+     * Returns -1 if no pending restorations.
+     */
+    public long getNextBatchEtaMs() {
+        long now = System.currentTimeMillis();
+        long soonestMs = Long.MAX_VALUE;
+        for (PendingRestoration p : queue) {
+            long timeUntil = p.getRestoreTime() - now;
+            if (timeUntil > 0) {
+                soonestMs = Math.min(soonestMs, timeUntil);
+            }
+        }
+        return (soonestMs == Long.MAX_VALUE) ? -1L : Math.max(0L, soonestMs);
+    }
     
     /**
      * Gets detailed stats for debugging.

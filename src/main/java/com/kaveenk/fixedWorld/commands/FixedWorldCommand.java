@@ -129,6 +129,11 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
         player.sendMessage(ChatColor.GRAY + "Batch size: " + ChatColor.WHITE + batchSize + " blocks/tick");
         player.sendMessage(ChatColor.GRAY + "Batch interval: " + ChatColor.WHITE + batchInterval + " ticks (" +
                           String.format("%.2f", batchInterval / 20.0) + "s)");
+        long nextEtaMs = snapshotManager.getNextRestoreEtaMs();
+        if (nextEtaMs >= 0) {
+            player.sendMessage(ChatColor.GRAY + "Next restore batch: " + ChatColor.WHITE +
+                String.format("%.2f", nextEtaMs / 1000.0) + "s");
+        }
 
         player.sendMessage(ChatColor.AQUA + "--- Crash Resilience ---");
         if (flushInterval > 0) {
@@ -241,8 +246,8 @@ public class FixedWorldCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        if (ticks < 20 || ticks > 1200) {
-            player.sendMessage(ChatColor.RED + "Flush interval must be between 20 and 1200 ticks.");
+        if (ticks < 1 || ticks > 1200) {
+            player.sendMessage(ChatColor.RED + "Flush interval must be between 1 and 1200 ticks.");
             return;
         }
 

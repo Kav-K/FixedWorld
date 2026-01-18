@@ -75,6 +75,10 @@ public class WorldSnapshotManager {
 
     // Persistence manager (may be null if persistence failed to initialize)
     private final PersistenceManager persistenceManager;
+    private static final String SETTING_BATCH_SIZE = "batch_size";
+    private static final String SETTING_BATCH_INTERVAL = "batch_interval";
+    private static final String SETTING_FLUSH_INTERVAL = "flush_interval";
+    private static final String SETTING_WAL_INTERVAL = "wal_interval";
 
     public WorldSnapshotManager(FixedWorld plugin, PersistenceManager persistenceManager) {
         this.plugin = plugin;
@@ -97,6 +101,9 @@ public class WorldSnapshotManager {
      */
     public void setBlocksPerTick(int blocks) {
         restorationQueue.setBlocksPerTick(blocks);
+        if (persistenceManager != null) {
+            persistenceManager.savePluginSetting(SETTING_BATCH_SIZE, blocks);
+        }
     }
 
     public int getBlocksPerTick() {
@@ -109,10 +116,17 @@ public class WorldSnapshotManager {
      */
     public void setBatchIntervalTicks(int ticks) {
         restorationQueue.setTickInterval(ticks);
+        if (persistenceManager != null) {
+            persistenceManager.savePluginSetting(SETTING_BATCH_INTERVAL, ticks);
+        }
     }
 
     public int getBatchIntervalTicks() {
         return restorationQueue.getTickInterval();
+    }
+
+    public long getNextRestoreEtaMs() {
+        return restorationQueue.getNextBatchEtaMs();
     }
     /**
      * Sets the chunk scanner for ABSOLUTE mode.
@@ -187,9 +201,24 @@ public class WorldSnapshotManager {
             return;
         }
 
+        // Load global plugin settings
+        Map<String, Integer> pluginSettings = persistenceManager.loadPluginSettings();
+        if (pluginSettings.containsKey(SETTING_BATCH_SIZE)) {
+            restorationQueue.setBlocksPerTick(pluginSettings.get(SETTING_BATCH_SIZE));
+        }
+        if (pluginSettings.containsKey(SETTING_BATCH_INTERVAL)) {
+            restorationQueue.setTickInterval(pluginSettings.get(SETTING_BATCH_INTERVAL));
+        }
+        if (pluginSettings.containsKey(SETTING_FLUSH_INTERVAL)) {
+            persistenceManager.setFlushAllIntervalTicks(pluginSettings.get(SETTING_FLUSH_INTERVAL));
+        }
+        if (pluginSettings.containsKey(SETTING_WAL_INTERVAL)) {
+            persistenceManager.setWalIntervalTicks(pluginSettings.get(SETTING_WAL_INTERVAL));
+        }
+
         // Load fixed world settings
-        List<PersistenceManager.FixedWorldSettings> settings = persistenceManager.loadFixedWorldSettings();
-        for (PersistenceManager.FixedWorldSettings setting : settings) {
+        List<PersistenceManager.FixedWorldSettings> worldSettings = persistenceManager.loadFixedWorldSettings();
+        for (PersistenceManager.FixedWorldSettings setting : worldSettings) {
             World world = Bukkit.getWorld(setting.worldUuid);
             if (world != null) {
                 long ticks = setting.delaySeconds * 20L;
@@ -856,6 +885,7 @@ public class WorldSnapshotManager {
     public void setPersistenceFlushIntervalTicks(int ticks) {
         if (persistenceManager != null) {
             persistenceManager.setFlushAllIntervalTicks(ticks);
+            persistenceManager.savePluginSetting(SETTING_FLUSH_INTERVAL, ticks);
         }
     }
 
@@ -869,6 +899,7 @@ public class WorldSnapshotManager {
     public void setWalIntervalTicks(int ticks) {
         if (persistenceManager != null) {
             persistenceManager.setWalIntervalTicks(ticks);
+            persistenceManager.savePluginSetting(SETTING_WAL_INTERVAL, ticks);
         }
     }
 

@@ -123,6 +123,14 @@ public class DatabaseManager {
                 )
             """);
 
+            // Global plugin settings
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS plugin_settings (
+                    setting_key TEXT PRIMARY KEY,
+                    setting_value TEXT NOT NULL
+                )
+            """);
+
             // Create indexes for fast queries
             stmt.execute("""
                 CREATE INDEX IF NOT EXISTS idx_pending_restore_time 
